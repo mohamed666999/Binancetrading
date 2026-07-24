@@ -1,6 +1,5 @@
 import ccxt
 import time
-import os
 from openai import OpenAI
 from flask import Flask
 from threading import Thread
@@ -18,14 +17,13 @@ def run_server():
     app.run(host='0.0.0.0', port=8080)
 
 # ==========================================
-# 2. إعدادات الاتصال (بينانس + وكيل)
+# 2. إعدادات الاتصال (بينانس + وكيل - اختياري)
 # ==========================================
-# ضع رابط الوكيل هنا إن وجد، أو اتركه فارغاً
-PROXY_URL = os.getenv("HTTP_PROXY", "")  # مثال: http://user:pass@ip:port
+PROXY_URL = ""  # اتركه فارغاً أو ضع وكيل مثل: http://user:pass@ip:port
 
 exchange_params = {
-    'apiKey': os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"),
-    'secret': os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"),
+    'apiKey': "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4",
+    'secret': "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU",
     'enableRateLimit': True,
     'options': {
         'defaultType': 'swap',
@@ -55,7 +53,7 @@ def execute_trade(symbol, decision):
     TRADE_MARGIN = 10
 
     try:
-        print(f"🚀 بدء تنفيذ {decision} على {symbol}", flush=True)
+        print(f"🚀 تنفيذ {decision} على {symbol} الآن...", flush=True)
         exchange.load_markets()
         market = exchange.market(symbol)
         ticker = exchange.fetch_ticker(symbol)
@@ -73,7 +71,7 @@ def execute_trade(symbol, decision):
         print("⚙️ ضبط الرافعة...", flush=True)
         exchange.set_leverage(LEVERAGE, symbol)
         print("📤 إرسال أمر السوق...", flush=True)
-        order = exchange.create_order(symbol, "market", side, position_size)
+        order = exchange.create_market_order(symbol, side, position_size)
         print("✅ تم فتح المركز بنجاح!", flush=True)
         print(order, flush=True)
 
@@ -105,7 +103,7 @@ def load_symbols_once():
             ):
                 symbols.append(symbol)
 
-        ALL_SYMBOLS = symbols[:2]  # أول عملتين للاختبار
+        ALL_SYMBOLS = symbols[:2]  # BTC و ETH للاختبار
         print(f"✅ تم تحميل {len(ALL_SYMBOLS)} عملة: {ALL_SYMBOLS}", flush=True)
         return ALL_SYMBOLS
 
@@ -114,7 +112,7 @@ def load_symbols_once():
         return []
 
 # ==========================================
-# 5. دورة التحليل (مع تتبع الخطوات)
+# 5. دورة التحليل (مع تتبع شامل للذكاء الاصطناعي)
 # ==========================================
 def fetch_and_analyze():
     symbols = load_symbols_once()
@@ -134,33 +132,49 @@ def fetch_and_analyze():
             hourly_candles = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=24)
             print(f"[{symbol}] 5️⃣ تم جلب البيانات الساعية", flush=True)
 
-            prompt = f"""
-حلل {symbol} بسرعة.
+            # --- إرسال إلى الذكاء الاصطناعي (مع timeout ومعالجة الخطأ) ---
+            print(f"[{symbol}] 6️⃣ إرسال البيانات إلى الذكاء الاصطناعي...", flush=True)
 
-البيانات اليومية:
-{daily_candles}
+            try:
+                completion = client.chat.completions.create(
+                    model="deepseek-ai/deepseek-v4-pro",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": f"""
+اختر قراراً واحداً فقط بناءً على البيانات التالية.
 
-البيانات الساعية:
-{hourly_candles}
+العملة: {symbol}
+اليومي: {daily_candles}
+الساعي: {hourly_candles}
 
 أجب بكلمة واحدة فقط:
-BUY أو SELL أو WAIT
+BUY
+SELL
+WAIT
 """
-            print(f"[{symbol}] 6️⃣ إرسال البيانات إلى الذكاء الاصطناعي...", flush=True)
-            completion = client.chat.completions.create(
-                model="deepseek-ai/deepseek-v4-pro",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=10,
-                extra_body={"chat_template_kwargs": {"thinking": False}},
-                stream=False
-            )
-            print(f"[{symbol}] 7️⃣ وصل رد الذكاء الاصطناعي", flush=True)
+                        }
+                    ],
+                    temperature=0,
+                    max_tokens=5,
+                    stream=False,
+                    timeout=30,  # انتظار أقصى 30 ثانية للرد
+                    extra_body={
+                        "chat_template_kwargs": {
+                            "thinking": False
+                        }
+                    }
+                )
 
-            analysis_result = completion.choices[0].message.content or ""
-            print(f"🤖 رد AI لـ {symbol}: {analysis_result}", flush=True)
+                analysis_result = completion.choices[0].message.content or ""
+                print(f"[{symbol}] 7️⃣ وصل رد الذكاء الاصطناعي: {analysis_result}", flush=True)
 
-            text = analysis_result.upper()
+            except Exception as ai_error:
+                print(f"[{symbol}] ❌ خطأ NVIDIA AI: {type(ai_error).__name__}: {ai_error}", flush=True)
+                continue  # تخطي هذه العملة والانتقال للتالية
+
+            # --- تحليل الرد ---
+            text = analysis_result.upper().strip()
             if "BUY" in text:
                 decision = "BUY"
             elif "SELL" in text:
@@ -168,7 +182,7 @@ BUY أو SELL أو WAIT
             else:
                 decision = "WAIT"
 
-            print(f"[{symbol}] القرار النهائي: {decision}", flush=True)
+            print(f"[{symbol}] 🎯 القرار النهائي: {decision}", flush=True)
 
             if decision in ["BUY", "SELL"]:
                 print(f"🚀 محاولة فتح مركز {decision} على {symbol}", flush=True)
@@ -176,7 +190,7 @@ BUY أو SELL أو WAIT
             else:
                 print(f"⏳ لا توجد صفقة على {symbol}", flush=True)
 
-            time.sleep(3)   # تأخير إضافي بين العملات
+            time.sleep(3)
 
         except Exception as e:
             print(f"❌ خطأ حقيقي في {symbol}: {type(e).__name__}: {e}", flush=True)
