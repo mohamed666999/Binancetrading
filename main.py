@@ -27,6 +27,7 @@ exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {
         'defaultType': 'swap',
+        'adjustForTimeDifference': True,
     }
 })
 
@@ -36,7 +37,7 @@ client = OpenAI(
 )
 
 # ==========================================
-# 3. ذراع التنفيذ المحسّن (مطابق لقواعد بينانس)
+# 3. ذراع التنفيذ الآمن
 # ==========================================
 
 def execute_trade(symbol, decision):
@@ -44,21 +45,17 @@ def execute_trade(symbol, decision):
     TRADE_MARGIN = 10
 
     try:
-        # السعر الحالي
         ticker = exchange.fetch_ticker(symbol)
         current_price = ticker['last']
 
-        # قيمة المركز = الهامش × الرافعة
         notional_value = TRADE_MARGIN * LEVERAGE
         position_size = notional_value / current_price
 
         if decision == "BUY":
             side = "buy"
-            exit_side = "sell"
             position_name = "LONG"
         elif decision == "SELL":
             side = "sell"
-            exit_side = "buy"
             position_name = "SHORT"
         else:
             return
@@ -69,10 +66,8 @@ def execute_trade(symbol, decision):
         print(f"💵 قيمة المركز: {notional_value} USDT")
         print(f"📦 الكمية: {position_size}")
 
-        # تحديد الرافعة
         exchange.set_leverage(LEVERAGE, symbol)
 
-        # فتح المركز بسعر السوق
         order = exchange.create_market_order(
             symbol,
             side,
@@ -87,24 +82,27 @@ def execute_trade(symbol, decision):
         print(e)
 
 # ==========================================
-# 4. محرك البحث والتحليل الآمن
+# 4. محرك البحث والتحليل (متوافق مع FAPI لتجنب حظر بينانس)
 # ==========================================
 
 def get_all_usdt_symbols():
-    markets = exchange.load_markets()
-    symbols = []
+    try:
+        markets = exchange.fetch_markets({'type': 'swap'})
+        symbols = []
 
-    for symbol, market in markets.items():
-        if (
-            market.get("active")
-            and market.get("swap")
-            and market.get("linear")
-            and market.get("settle") == "USDT"
-        ):
-            symbols.append(symbol)
+        for market in markets:
+            if (
+                market.get("active")
+                and market.get("linear")
+                and market.get("quote") == "USDT"
+            ):
+                symbols.append(market['symbol'])
 
-    # قصر القائمة مؤقتاً على أول عملة للتجربة الآمنة وعدم إرهاق السيرفر
-    return symbols[:1]
+        # قصر القائمة على أول عملتين للاختبار الآمن وعدم تجاوز حدود الحظر
+        return symbols[:2]
+    except Exception as e:
+        print(f"⚠️ خطأ في تحميل الأسواق: {e}")
+        return []
 
 def fetch_and_analyze():
     symbols = get_all_usdt_symbols()
@@ -166,16 +164,10 @@ BUY أو SELL أو WAIT
 # ==========================================
 
 if __name__ == "__main__":
-    # تشغيل السيرفر الوهمي في مسار جانبي (Thread)
+    # تشغيل السيرفر الوهمي في مسار جانبي
     Thread(target=run_server).start()
 
-    # اختبار تجريبي سريع للتأكد من ربط العقود قبل دورة الذكاء الاصطناعي
-    print("🧪 اختبار فتح صفقة مباشرة على أول عملة...")
-    test_symbols = get_all_usdt_symbols()
-    if test_symbols:
-        execute_trade(test_symbols[0], "BUY")
-
-    # تشغيل البوت في المسار الرئيسي  
+    # حلقة التشغيل الرئيسية للبوت
     while True:  
         print("🔄 بدء دورة مسح رادارية جديدة...")  
         try:  
