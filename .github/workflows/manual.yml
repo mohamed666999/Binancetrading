@@ -1,0 +1,28 @@
+name: الرادار الذكي - بينانس
+
+on:
+  schedule:
+    # هذا السطر يخبر السيرفر بالعمل كل 5 دقائق
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # هذا يضيف لك زراً يدوياً لتشغيل البوت فوراً متى شئت للتجربة
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest # تشغيل على سيرفر لينكس سريع
+
+    steps:
+    - name: جلب الكود من المستودع
+      uses: actions/checkout@v3
+
+    - name: تجهيز بيئة بايثون
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: تثبيت المكتبات المطلوبة (ccxt و openai)
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: تشغيل كود الذكاء الاصطناعي والتداول
+      run: python main.py
