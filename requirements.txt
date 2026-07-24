@@ -1,4 +1,4 @@
 ccxt
 openai
-Flask
-
+flask
+gunicorn
