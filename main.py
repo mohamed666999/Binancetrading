@@ -15,7 +15,6 @@ def keep_alive():
     return "🤖 رادار الذكاء الاصطناعي يعمل بنجاح ولا ينام!"
 
 def run_server():
-    # تشغيل السيرفر على المنفذ 8080
     app.run(host='0.0.0.0', port=8080)
 
 # ==========================================
@@ -37,86 +36,126 @@ client = OpenAI(
 )
 
 # ==========================================
-# 3. ذراع التنفيذ
+# 3. ذراع التنفيذ المحسّن (مطابق لقواعد بينانس)
 # ==========================================
 
 def execute_trade(symbol, decision):
     LEVERAGE = 10
     TRADE_MARGIN = 10
-    TP_PERCENT = 0.05
-    SL_PERCENT = 0.03
 
-    try:  
-        exchange.set_leverage(LEVERAGE, symbol)  
-        ticker = exchange.fetch_ticker(symbol)  
-        current_price = ticker['last']  
-        position_size = (TRADE_MARGIN * LEVERAGE) / current_price  
-          
-        if decision == "BUY":  
-            tp_price = current_price * (1 + TP_PERCENT)  
-            sl_price = current_price * (1 - SL_PERCENT)  
-            side = 'buy'  
-            exit_side = 'sell'  
-        elif decision == "SELL":  
-            tp_price = current_price * (1 - TP_PERCENT)  
-            sl_price = current_price * (1 + SL_PERCENT)  
-            side = 'sell'  
-            exit_side = 'buy'  
-        else:  
-            return   
+    try:
+        # السعر الحالي
+        ticker = exchange.fetch_ticker(symbol)
+        current_price = ticker['last']
 
-        print(f"🚀 جاري تنفيذ صفقة {decision} لعملة {symbol} بحجم {TRADE_MARGIN}$...")  
-        exchange.create_market_order(symbol, side, position_size)  
-        exchange.create_order(symbol, 'stop_market', exit_side, position_size, params={'stopPrice': sl_price, 'reduceOnly': True})  
-        exchange.create_order(symbol, 'take_profit_market', exit_side, position_size, params={'stopPrice': tp_price, 'reduceOnly': True})  
-        print("✅ تم فتح الصفقة بنجاح!")  
-    except Exception as e:  
-        print(f"❌ فشل التنفيذ لعملة {symbol}: {e}")
+        # قيمة المركز = الهامش × الرافعة
+        notional_value = TRADE_MARGIN * LEVERAGE
+        position_size = notional_value / current_price
+
+        if decision == "BUY":
+            side = "buy"
+            exit_side = "sell"
+            position_name = "LONG"
+        elif decision == "SELL":
+            side = "sell"
+            exit_side = "buy"
+            position_name = "SHORT"
+        else:
+            return
+
+        print(f"🚀 {symbol}")
+        print(f"📊 القرار: {decision} ({position_name})")
+        print(f"💰 السعر: {current_price}")
+        print(f"💵 قيمة المركز: {notional_value} USDT")
+        print(f"📦 الكمية: {position_size}")
+
+        # تحديد الرافعة
+        exchange.set_leverage(LEVERAGE, symbol)
+
+        # فتح المركز بسعر السوق
+        order = exchange.create_market_order(
+            symbol,
+            side,
+            position_size
+        )
+
+        print("✅ تم فتح المركز بنجاح!")
+        print(order)
+
+    except Exception as e:
+        print(f"❌ فشل فتح الصفقة {symbol}")
+        print(e)
 
 # ==========================================
-# 4. محرك البحث والتحليل
+# 4. محرك البحث والتحليل الآمن
 # ==========================================
 
 def get_all_usdt_symbols():
     markets = exchange.load_markets()
-    # التصحيح هنا ليتوافق مع صيغة العقود الآجلة في CCXT (تنتهي بـ :USDT)
-    symbols = [
-        symbol for symbol in markets 
-        if markets[symbol]['active'] 
-        and markets[symbol].get('swap', False) 
-        and symbol.endswith(':USDT')
-    ]
-    return symbols
+    symbols = []
+
+    for symbol, market in markets.items():
+        if (
+            market.get("active")
+            and market.get("swap")
+            and market.get("linear")
+            and market.get("settle") == "USDT"
+        ):
+            symbols.append(symbol)
+
+    # قصر القائمة مؤقتاً على أول عملة للتجربة الآمنة وعدم إرهاق السيرفر
+    return symbols[:1]
 
 def fetch_and_analyze():
     symbols = get_all_usdt_symbols()
-    print(f"تم العثور على {len(symbols)} عملة! بدأ المسح الراداري...\n")
+    print(f"تم العثور على {len(symbols)} عملة للعقود الدائمة! بدأ المسح الراداري...\n")
+    
     for symbol in symbols:
         try:
             print(f"[{symbol}] جاري سحب البيانات...")
             daily_candles = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=7)
             hourly_candles = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=24)
 
-            prompt = f"أنت محلل مالي محترف. حلل {symbol}.\nيومي: {daily_candles}\nساعي: {hourly_candles}\nأعطني توصية واضحة. يجب أن تنتهي إجابتك بكلمة واحدة فقط في السطر الأخير: (BUY أو SELL أو WAIT)."  
+            prompt = f"""
+حلل {symbol} بسرعة.
+
+البيانات اليومية:
+{daily_candles}
+
+البيانات الساعية:
+{hourly_candles}
+
+أجب بكلمة واحدة فقط:
+BUY أو SELL أو WAIT
+"""  
               
             completion = client.chat.completions.create(  
               model="deepseek-ai/deepseek-v4-pro",  
               messages=[{"role": "user", "content": prompt}],  
-              temperature=1,  
-              top_p=0.95,  
-              max_tokens=16384,  
+              temperature=0,  
+              max_tokens=10,  
               extra_body={"chat_template_kwargs": {"thinking": False}},  
               stream=False  
             )  
               
-            analysis_result = completion.choices[0].message.content  
-            words = analysis_result.strip().split()  
-            decision = words[-1].upper().replace(".", "").replace(",", "") if words else "WAIT"  
-              
-            if decision in ["BUY", "SELL"]:  
-                execute_trade(symbol, decision)  
-            else:  
-                print("⏳ توصية بالانتظار.")  
+            analysis_result = completion.choices[0].message.content or ""
+            print(f"🤖 رد AI لـ {symbol}:")
+            print(analysis_result[:500])
+
+            text = analysis_result.upper()
+
+            if "BUY" in text:
+                decision = "BUY"
+            elif "SELL" in text:
+                decision = "SELL"
+            else:
+                decision = "WAIT"
+
+            if decision in ["BUY", "SELL"]:
+                print(f"🚀 القرار: {decision}")
+                execute_trade(symbol, decision)
+            else:
+                print("⏳ القرار: WAIT")
                   
             time.sleep(1)   
         except Exception as e:  
@@ -129,6 +168,12 @@ def fetch_and_analyze():
 if __name__ == "__main__":
     # تشغيل السيرفر الوهمي في مسار جانبي (Thread)
     Thread(target=run_server).start()
+
+    # اختبار تجريبي سريع للتأكد من ربط العقود قبل دورة الذكاء الاصطناعي
+    print("🧪 اختبار فتح صفقة مباشرة على أول عملة...")
+    test_symbols = get_all_usdt_symbols()
+    if test_symbols:
+        execute_trade(test_symbols[0], "BUY")
 
     # تشغيل البوت في المسار الرئيسي  
     while True:  
