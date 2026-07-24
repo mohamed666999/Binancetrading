@@ -50,6 +50,9 @@ def execute_trade(symbol, decision):
 
         notional_value = TRADE_MARGIN * LEVERAGE
         position_size = notional_value / current_price
+        
+        # ✅ تصحيح دقة الكمية حسب متطلبات Binance
+        position_size = float(exchange.amount_to_precision(symbol, position_size))
 
         if decision == "BUY":
             side = "buy"
@@ -82,24 +85,28 @@ def execute_trade(symbol, decision):
         print(e)
 
 # ==========================================
-# 4. محرك البحث والتحليل (متوافق مع FAPI لتجنب حظر بينانس)
+# 4. محرك البحث والتحليل (متوافق مع FAPI)
 # ==========================================
 
 def get_all_usdt_symbols():
     try:
-        markets = exchange.fetch_markets({'type': 'swap'})
+        # ✅ استخدام load_markets بدل fetch_markets
+        markets = exchange.load_markets()
+
         symbols = []
 
-        for market in markets:
+        for symbol, market in markets.items():
             if (
                 market.get("active")
+                and market.get("swap")
                 and market.get("linear")
-                and market.get("quote") == "USDT"
+                and market.get("settle") == "USDT"
             ):
-                symbols.append(market['symbol'])
+                symbols.append(symbol)
 
-        # قصر القائمة على أول عملتين للاختبار الآمن وعدم تجاوز حدود الحظر
+        # قصر القائمة على أول عملتين للاختبار الآمن
         return symbols[:2]
+
     except Exception as e:
         print(f"⚠️ خطأ في تحميل الأسواق: {e}")
         return []
