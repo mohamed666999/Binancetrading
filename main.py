@@ -1,14 +1,13 @@
 import json
 import ccxt
 import time
-from threading import Thread
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
 app = Flask(__name__)
 
 # ==========================================
-# 1. إعداد سيرفر keep‑alive (مدمج مع الويبهوك)
+# 1. إعداد سيرفر keep‑alive
 # ==========================================
 @app.route('/')
 def keep_alive():
@@ -34,7 +33,7 @@ if PROXY_URL:
         'http': PROXY_URL,
         'https': PROXY_URL,
     }
-    print(f"🔌 تم تفعيل الوكيل: {PROXY_URL}")
+    print(f"🔌 تم تفعيل الوكيل: {PROXY_URL}", flush=True)
 
 exchange = ccxt.binance(exchange_params)
 
@@ -49,7 +48,34 @@ client = OpenAI(
 MODEL_NAME = "deepseek-ai/deepseek-v4-pro"   # موديل NVIDIA المتاح
 
 # ==========================================
-# 4. دالة بناء الـ prompt وطلب التحليل من NVIDIA
+# 4. دوال مساعدة
+# ==========================================
+
+def normalize_symbol(symbol: str) -> str:
+    """تحويل الرمز إلى صيغة Binance للعقود الدائمة (مثلاً BTCUSDT -> BTC/USDT:USDT)"""
+    if ":" in symbol:
+        return symbol
+    # إذا كان مثل BTCUSDT
+    if "/" not in symbol:
+        symbol = symbol.upper().replace("USDT", "/USDT")
+        return symbol + ":USDT"
+    return symbol
+
+def has_open_position(symbol: str) -> bool:
+    """التحقق من وجود مركز مفتوح على العملة"""
+    try:
+        positions = exchange.fetch_positions([symbol])
+        for pos in positions:
+            if float(pos['contracts']) != 0:
+                print(f"⚠️ يوجد مركز مفتوح بالفعل على {symbol} ({pos['side']} {pos['contracts']})", flush=True)
+                return True
+        return False
+    except Exception as e:
+        print(f"⚠️ تعذر التحقق من المراكز: {e}", flush=True)
+        return False
+
+# ==========================================
+# 5. بناء الـ prompt وطلب التحليل من NVIDIA
 # ==========================================
 def build_prompt(payload: dict) -> str:
     return f"""
@@ -84,6 +110,7 @@ volume: {payload.get("volume")}
 
 def ask_ai(payload: dict) -> dict:
     prompt = build_prompt(payload)
+    print("🧠 إرسال البيانات إلى AI...", flush=True)
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -95,13 +122,15 @@ def ask_ai(payload: dict) -> dict:
             temperature=0,
             max_tokens=120,
             timeout=30,
-            extra_body={"chat_template_kwargs": {"thinking": False}}  # حسب إعدادات NVIDIA
+            extra_body={"chat_template_kwargs": {"thinking": False}}
         )
         text = (resp.choices[0].message.content or "").strip()
-        return json.loads(text)
+        result = json.loads(text)
+        print(f"✅ AI رد: {result}", flush=True)
+        return result
     except Exception as e:
-        print(f"NVIDIA AI parsing error: {e}")
-        # fallback بسيط
+        print(f"⚠️ خطأ في AI أو JSON: {e}", flush=True)
+        # fallback
         upper = text.upper() if 'text' in locals() else ""
         if "LONG" in upper:
             decision = "LONG"
@@ -109,55 +138,117 @@ def ask_ai(payload: dict) -> dict:
             decision = "SHORT"
         else:
             decision = "WAIT"
-        return {"decision": decision, "confidence": 50, "reason": f"fallback: {text[:200]}"}
+        return {"decision": decision, "confidence": 50, "reason": "fallback"}
 
 # ==========================================
-# 5. دالة تنفيذ الصفقة على Binance
+# 6. تنفيذ الصفقة + TP/SL
 # ==========================================
 def execute_trade(symbol: str, decision: str):
     LEVERAGE = 10
-    TRADE_MARGIN = 10  # 10 USDT هامش
+    TRADE_MARGIN = 10      # 10 USDT هامش
+    TP_PERCENT = 2.0       # جني ربح 2%
+    SL_PERCENT = 1.0       # وقف خسارة 1%
 
     try:
-        print(f"🚀 فتح مركز {decision} على {symbol}")
+        print(f"🔌 الاتصال بـ Binance للتنفيذ...", flush=True)
+        exchange.load_markets()
         ticker = exchange.fetch_ticker(symbol)
         current_price = ticker['last']
+        print(f"💰 السعر الحالي: {current_price}", flush=True)
 
         notional_value = TRADE_MARGIN * LEVERAGE
         raw_amount = notional_value / current_price
         position_size = float(exchange.amount_to_precision(symbol, raw_amount))
-
         side = "buy" if decision == "LONG" else "sell"
 
-        print(f"💰 السعر: {current_price} | 📦 الكمية: {position_size}")
-        exchange.set_leverage(LEVERAGE, symbol)
-        order = exchange.create_market_order(symbol, side, position_size)
+        print(f"📦 الكمية: {position_size} | قيمة المركز: {notional_value} USDT", flush=True)
 
-        print("✅ تم فتح المركز بنجاح!")
+        # ضبط الرافعة
+        exchange.set_leverage(LEVERAGE, symbol)
+
+        # فتح المركز
+        print("🚀 إرسال أمر فتح المركز...", flush=True)
+        order = exchange.create_market_order(symbol, side, position_size)
+        print(f"✅ تم فتح {decision} بنجاح!", flush=True)
+        print(order, flush=True)
+
+        # --- إعداد TP/SL ---
+        try:
+            if decision == "LONG":
+                tp_price = current_price * (1 + TP_PERCENT / 100)
+                sl_price = current_price * (1 - SL_PERCENT / 100)
+            else:  # SHORT
+                tp_price = current_price * (1 - TP_PERCENT / 100)
+                sl_price = current_price * (1 + SL_PERCENT / 100)
+
+            # جني الأرباح (TAKE_PROFIT_MARKET)
+            exchange.create_order(
+                symbol,
+                'TAKE_PROFIT_MARKET',
+                'sell' if decision == 'LONG' else 'buy',  # إغلاق
+                position_size,
+                None,
+                {
+                    'stopPrice': round(tp_price, 2),
+                    'reduceOnly': True
+                }
+            )
+            print(f"✅ تم وضع TP عند {tp_price:.2f}", flush=True)
+
+            # وقف الخسارة (STOP_MARKET)
+            exchange.create_order(
+                symbol,
+                'STOP_MARKET',
+                'sell' if decision == 'LONG' else 'buy',
+                position_size,
+                None,
+                {
+                    'stopPrice': round(sl_price, 2),
+                    'reduceOnly': True
+                }
+            )
+            print(f"✅ تم وضع SL عند {sl_price:.2f}", flush=True)
+
+        except Exception as tp_err:
+            print(f"⚠️ فشل في تعيين TP/SL: {tp_err}", flush=True)
+
         return {"executed": True, "order": order}
 
     except Exception as e:
-        print(f"❌ فشل فتح الصفقة: {e}")
+        print(f"❌ فشل فتح الصفقة: {e}", flush=True)
         return {"executed": False, "error": str(e)}
 
 # ==========================================
-# 6. نقطة نهاية الويبهوك
+# 7. نقطة نهاية الويبهوك (TradingView → AI → Binance)
 # ==========================================
 @app.post("/webhook")
 def webhook():
+    print("\n📡 Webhook من TradingView وصل", flush=True)
     try:
         payload = request.get_json(force=True, silent=False)
-        print(f"📩 إشارة واردة: {payload.get('symbol')}")
+        print(f"📊 البيانات المستلمة: {payload}", flush=True)
 
-        # 1. اسأل NVIDIA AI عن القرار
+        # تطبيع الرمز
+        raw_symbol = payload.get("symbol", "BTC/USDT:USDT")
+        symbol = normalize_symbol(raw_symbol)
+        print(f"🎯 الرمز المستخدم: {symbol}", flush=True)
+
+        # 1. منع تكرار الصفقة
+        if has_open_position(symbol):
+            print("⛔ تخطي: يوجد مركز مفتوح بالفعل.", flush=True)
+            return jsonify({"success": True, "reason": "position_already_open"})
+
+        # 2. تحليل AI
         ai_result = ask_ai(payload)
         decision = str(ai_result.get("decision", "WAIT")).upper()
+        print(f"🧠 قرار AI: {decision} (الثقة: {ai_result.get('confidence', '?')}%)", flush=True)
 
-        # 2. نفذ الصفقة إذا لم تكن WAIT
+        # 3. تنفيذ الصفقة إذا لم تكن WAIT
         trade_result = None
         if decision in ("LONG", "SHORT"):
-            symbol = payload.get("symbol", "BTC/USDT:USDT")
             trade_result = execute_trade(symbol, decision)
+        else:
+            print("⏳ القرار WAIT - لا توجد صفقة.", flush=True)
 
         return jsonify({
             "success": True,
@@ -167,13 +258,11 @@ def webhook():
         })
 
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        print(f"❌ خطأ عام: {e}", flush=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # ==========================================
-# 7. تشغيل التطبيق
+# 8. تشغيل التطبيق
 # ==========================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
