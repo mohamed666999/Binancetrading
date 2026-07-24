@@ -1,23 +1,21 @@
+import json
 import ccxt
 import time
-from openai import OpenAI
-from flask import Flask
 from threading import Thread
+from flask import Flask, request, jsonify
+from openai import OpenAI
 
-# ==========================================
-# 1. إعداد السيرفر الوهمي
-# ==========================================
 app = Flask(__name__)
 
+# ==========================================
+# 1. إعداد سيرفر keep‑alive (مدمج مع الويبهوك)
+# ==========================================
 @app.route('/')
 def keep_alive():
     return "🤖 رادار الذكاء الاصطناعي يعمل بنجاح ولا ينام!"
 
-def run_server():
-    app.run(host='0.0.0.0', port=8080)
-
 # ==========================================
-# 2. إعدادات الاتصال (بينانس + وكيل - اختياري)
+# 2. إعدادات الاتصال (Binance + وكيل)
 # ==========================================
 PROXY_URL = ""  # اتركه فارغاً أو ضع وكيل مثل: http://user:pass@ip:port
 
@@ -40,22 +38,88 @@ if PROXY_URL:
 
 exchange = ccxt.binance(exchange_params)
 
+# ==========================================
+# 3. إعداد عميل NVIDIA AI
+# ==========================================
 client = OpenAI(
     base_url="https://integrate.api.nvidia.com/v1",
     api_key="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"
 )
 
+MODEL_NAME = "deepseek-ai/deepseek-v4-pro"   # موديل NVIDIA المتاح
+
 # ==========================================
-# 3. ذراع التنفيذ الآمن
+# 4. دالة بناء الـ prompt وطلب التحليل من NVIDIA
 # ==========================================
-def execute_trade(symbol, decision):
+def build_prompt(payload: dict) -> str:
+    return f"""
+أنت محلل تداول فني محترف.
+
+حلّل البيانات التالية وأعد قرارًا واحدًا فقط من:
+LONG
+SHORT
+WAIT
+
+أعد JSON فقط بهذا الشكل:
+{{
+  "decision": "LONG|SHORT|WAIT",
+  "confidence": 0-100,
+  "reason": "short reason"
+}}
+
+البيانات:
+symbol: {payload.get("symbol")}
+timeframe: {payload.get("timeframe")}
+lookback: {payload.get("lookback")}
+emaFast: {payload.get("emaFast")}
+emaSlow: {payload.get("emaSlow")}
+rsi: {payload.get("rsi")}
+
+open: {payload.get("open")}
+high: {payload.get("high")}
+low: {payload.get("low")}
+close: {payload.get("close")}
+volume: {payload.get("volume")}
+""".strip()
+
+def ask_ai(payload: dict) -> dict:
+    prompt = build_prompt(payload)
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "Return JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            stream=False,
+            temperature=0,
+            max_tokens=120,
+            timeout=30,
+            extra_body={"chat_template_kwargs": {"thinking": False}}  # حسب إعدادات NVIDIA
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return json.loads(text)
+    except Exception as e:
+        print(f"NVIDIA AI parsing error: {e}")
+        # fallback بسيط
+        upper = text.upper() if 'text' in locals() else ""
+        if "LONG" in upper:
+            decision = "LONG"
+        elif "SHORT" in upper:
+            decision = "SHORT"
+        else:
+            decision = "WAIT"
+        return {"decision": decision, "confidence": 50, "reason": f"fallback: {text[:200]}"}
+
+# ==========================================
+# 5. دالة تنفيذ الصفقة على Binance
+# ==========================================
+def execute_trade(symbol: str, decision: str):
     LEVERAGE = 10
-    TRADE_MARGIN = 10
+    TRADE_MARGIN = 10  # 10 USDT هامش
 
     try:
-        print(f"🚀 تنفيذ {decision} على {symbol} الآن...", flush=True)
-        exchange.load_markets()
-        market = exchange.market(symbol)
+        print(f"🚀 فتح مركز {decision} على {symbol}")
         ticker = exchange.fetch_ticker(symbol)
         current_price = ticker['last']
 
@@ -63,154 +127,53 @@ def execute_trade(symbol, decision):
         raw_amount = notional_value / current_price
         position_size = float(exchange.amount_to_precision(symbol, raw_amount))
 
-        side = "buy" if decision == "BUY" else "sell"
+        side = "buy" if decision == "LONG" else "sell"
 
-        print(f"💰 السعر: {current_price}", flush=True)
-        print(f"💵 قيمة المركز: {notional_value} USDT", flush=True)
-        print(f"📦 الكمية: {position_size}", flush=True)
-        print("⚙️ ضبط الرافعة...", flush=True)
+        print(f"💰 السعر: {current_price} | 📦 الكمية: {position_size}")
         exchange.set_leverage(LEVERAGE, symbol)
-        print("📤 إرسال أمر السوق...", flush=True)
         order = exchange.create_market_order(symbol, side, position_size)
-        print("✅ تم فتح المركز بنجاح!", flush=True)
-        print(order, flush=True)
+
+        print("✅ تم فتح المركز بنجاح!")
+        return {"executed": True, "order": order}
 
     except Exception as e:
-        print(f"❌ فشل فتح الصفقة {symbol}", flush=True)
-        print(f"نوع الخطأ: {type(e).__name__}", flush=True)
-        print(f"التفاصيل: {e}", flush=True)
+        print(f"❌ فشل فتح الصفقة: {e}")
+        return {"executed": False, "error": str(e)}
 
 # ==========================================
-# 4. تحميل الأسواق (مرة واحدة فقط)
+# 6. نقطة نهاية الويبهوك
 # ==========================================
-ALL_SYMBOLS = []
-
-def load_symbols_once():
-    global ALL_SYMBOLS
-    if ALL_SYMBOLS:
-        return ALL_SYMBOLS
-
+@app.post("/webhook")
+def webhook():
     try:
-        print("📡 جاري تحميل الأسواق لأول مرة...", flush=True)
-        markets = exchange.load_markets()
-        symbols = []
-        for symbol, market in markets.items():
-            if (
-                market.get("active")
-                and market.get("swap")
-                and market.get("linear")
-                and market.get("settle") == "USDT"
-            ):
-                symbols.append(symbol)
+        payload = request.get_json(force=True, silent=False)
+        print(f"📩 إشارة واردة: {payload.get('symbol')}")
 
-        ALL_SYMBOLS = symbols[:2]  # BTC و ETH للاختبار
-        print(f"✅ تم تحميل {len(ALL_SYMBOLS)} عملة: {ALL_SYMBOLS}", flush=True)
-        return ALL_SYMBOLS
+        # 1. اسأل NVIDIA AI عن القرار
+        ai_result = ask_ai(payload)
+        decision = str(ai_result.get("decision", "WAIT")).upper()
+
+        # 2. نفذ الصفقة إذا لم تكن WAIT
+        trade_result = None
+        if decision in ("LONG", "SHORT"):
+            symbol = payload.get("symbol", "BTC/USDT:USDT")
+            trade_result = execute_trade(symbol, decision)
+
+        return jsonify({
+            "success": True,
+            "received": payload,
+            "ai_result": ai_result,
+            "trade_result": trade_result
+        })
 
     except Exception as e:
-        print(f"⚠️ فشل تحميل الأسواق: {e}", flush=True)
-        return []
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # ==========================================
-# 5. دورة التحليل (مع تتبع شامل للذكاء الاصطناعي)
-# ==========================================
-def fetch_and_analyze():
-    symbols = load_symbols_once()
-    if not symbols:
-        print("❌ لا توجد عملات متاحة. تخطي هذه الدورة.", flush=True)
-        return
-
-    print(f"🔍 بدأ تحليل {len(symbols)} عملة...\n", flush=True)
-    for symbol in symbols:
-        try:
-            print(f"\n[{symbol}] 1️⃣ بدء سحب البيانات...", flush=True)
-            print(f"[{symbol}] 2️⃣ سحب البيانات اليومية...", flush=True)
-            daily_candles = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=7)
-            print(f"[{symbol}] 3️⃣ تم جلب البيانات اليومية", flush=True)
-
-            print(f"[{symbol}] 4️⃣ سحب البيانات الساعية...", flush=True)
-            hourly_candles = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=24)
-            print(f"[{symbol}] 5️⃣ تم جلب البيانات الساعية", flush=True)
-
-            # --- إرسال إلى الذكاء الاصطناعي (مع timeout ومعالجة الخطأ) ---
-            print(f"[{symbol}] 6️⃣ إرسال البيانات إلى الذكاء الاصطناعي...", flush=True)
-
-            try:
-                completion = client.chat.completions.create(
-                    model="deepseek-ai/deepseek-v4-pro",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": f"""
-اختر قراراً واحداً فقط بناءً على البيانات التالية.
-
-العملة: {symbol}
-اليومي: {daily_candles}
-الساعي: {hourly_candles}
-
-أجب بكلمة واحدة فقط:
-BUY
-SELL
-WAIT
-"""
-                        }
-                    ],
-                    temperature=0,
-                    max_tokens=5,
-                    stream=False,
-                    timeout=30,  # انتظار أقصى 30 ثانية للرد
-                    extra_body={
-                        "chat_template_kwargs": {
-                            "thinking": False
-                        }
-                    }
-                )
-
-                analysis_result = completion.choices[0].message.content or ""
-                print(f"[{symbol}] 7️⃣ وصل رد الذكاء الاصطناعي: {analysis_result}", flush=True)
-
-            except Exception as ai_error:
-                print(f"[{symbol}] ❌ خطأ NVIDIA AI: {type(ai_error).__name__}: {ai_error}", flush=True)
-                continue  # تخطي هذه العملة والانتقال للتالية
-
-            # --- تحليل الرد ---
-            text = analysis_result.upper().strip()
-            if "BUY" in text:
-                decision = "BUY"
-            elif "SELL" in text:
-                decision = "SELL"
-            else:
-                decision = "WAIT"
-
-            print(f"[{symbol}] 🎯 القرار النهائي: {decision}", flush=True)
-
-            if decision in ["BUY", "SELL"]:
-                print(f"🚀 محاولة فتح مركز {decision} على {symbol}", flush=True)
-                execute_trade(symbol, decision)
-            else:
-                print(f"⏳ لا توجد صفقة على {symbol}", flush=True)
-
-            time.sleep(3)
-
-        except Exception as e:
-            print(f"❌ خطأ حقيقي في {symbol}: {type(e).__name__}: {e}", flush=True)
-
-# ==========================================
-# 6. نقطة الانطلاق
+# 7. تشغيل التطبيق
 # ==========================================
 if __name__ == "__main__":
-    # تشغيل السيرفر الوهمي
-    Thread(target=run_server).start()
-
-    # تحميل الأسواق أول مرة
-    load_symbols_once()
-
-    # الدورة الرئيسية
-    while True:
-        print("\n🔄 بدء دورة مسح رادارية جديدة...", flush=True)
-        try:
-            fetch_and_analyze()
-        except Exception as e:
-            print(f"خطأ أثناء الدورة: {e}", flush=True)
-        print("✅ البوت سيرتاح لمدة 10 دقائق...", flush=True)
-        time.sleep(600)
+    app.run(host="0.0.0.0", port=8080)
