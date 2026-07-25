@@ -3,6 +3,9 @@ import time
 from openai import OpenAI
 from flask import Flask
 from threading import Thread
+import asyncio
+import websockets
+import json
 
 # ==================================================
 # 1. Flask لإبقاء Render مستيقظاً
@@ -72,7 +75,39 @@ SYMBOLS = [
 ]
 
 # ==================================================
-# 5. اختبار اتصال Binance
+# 5. WebSocket للأسعار الحية (جديد)
+# ==================================================
+
+async def listen_binance_prices(symbols):
+    """تستمع لبث الأسعار المباشر دون استهلاك طلبات"""
+    # تحويل BTC/USDT:USDT -> btcusdt
+    streams = "/".join([
+        s.split(":")[0].replace("/", "").lower() + "@ticker"
+        for s in symbols
+    ])
+    uri = f"wss://fstream.binance.com/stream?streams={streams}"
+    
+    async with websockets.connect(uri) as websocket:
+        print("✅ تم فتح قناة WebSocket للأسعار الحية")
+        while True:
+            try:
+                message = await websocket.recv()
+                data = json.loads(message)
+                if "data" in data:
+                    ticker = data["data"]
+                    symbol = ticker["s"]
+                    price = ticker["c"]
+                    print(f"📡 [{symbol}] السعر المباشر: {price}")
+            except Exception as e:
+                print(f"⚠️ خطأ WebSocket: {e}")
+                await asyncio.sleep(1)
+
+def run_websocket():
+    """تشغيل WebSocket في thread منفصل"""
+    asyncio.run(listen_binance_prices(SYMBOLS))
+
+# ==================================================
+# 6. اختبار اتصال Binance
 # ==================================================
 
 def test_binance():
@@ -89,7 +124,7 @@ def test_binance():
         return False
 
 # ==================================================
-# 6. جلب الشموع
+# 7. جلب الشموع
 # ==================================================
 
 def get_candles(symbol):
@@ -108,7 +143,7 @@ def get_candles(symbol):
         return None, None
 
 # ==================================================
-# 7. تحليل DeepSeek
+# 8. تحليل DeepSeek
 # ==================================================
 
 def ask_ai(symbol, daily, hourly):
@@ -160,7 +195,7 @@ WAIT
         return "WAIT"
 
 # ==================================================
-# 8. تنفيذ الصفقة
+# 9. تنفيذ الصفقة
 # ==================================================
 
 def execute_trade(symbol, decision):
@@ -202,7 +237,7 @@ def execute_trade(symbol, decision):
         print("ERROR:", e)
 
 # ==================================================
-# 9. دورة واحدة
+# 10. دورة واحدة
 # ==================================================
 
 def run_cycle():
@@ -227,11 +262,12 @@ def run_cycle():
         time.sleep(5)
 
 # ==================================================
-# 10. التشغيل
+# 11. التشغيل
 # ==================================================
 
 if __name__ == "__main__":
     Thread(target=run_server, daemon=True).start()
+    Thread(target=run_websocket, daemon=True).start()  # تشغيل WebSocket في الخلفية
     time.sleep(3)
     while True:
         try:
