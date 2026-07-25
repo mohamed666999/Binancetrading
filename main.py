@@ -4,6 +4,7 @@ import time
 import threading
 import websockets
 import ccxt
+import requests
 
 from flask import Flask
 from openai import OpenAI
@@ -284,69 +285,182 @@ def analyze_with_ai(symbol):
     print("=" * 60)
 
 
-    # ============================================
-    # ⚠️ تم تعطيل DeepSeek مؤقتاً للتجربة
-    # ============================================
-    if symbol == "DOGE/USDT:USDT":
-        decision = "BUY"  # سيقوم بفتح صفقة Long على الدوجكوين فوراً
-        print("⚠️ [وضع التجربة] تخطي DeepSeek - قرار إجباري: BUY")
-    else:
-        decision = "WAIT" # سيتجاهل باقي العملات
-        print("⚠️ [وضع التجربة] تخطي DeepSeek - قرار إجباري: WAIT")
+    market_data = None
 
 
-    # الكود الأصلي لـ DeepSeek تم تعطيله مؤقتاً
-    # market_data = None
-    # for key, value in SYMBOLS.items():
-    #     if value == symbol:
-    #         market_data = candles[key]
-    #         break
-    # if not market_data:
-    #     print("❌ لا توجد بيانات")
-    #     return
-    # one_minute = market_data["1m"][-100:]
-    # one_hour = market_data["1h"][-24:]
-    # one_day = market_data["1d"][-7:]
-    # ... باقي كود DeepSeek
+    for key, value in SYMBOLS.items():
+
+        if value == symbol:
+
+            market_data = candles[key]
+
+            break
 
 
-    print("")
+    if not market_data:
 
-    print(f"🎯 القرار النهائي: {decision}")
-
-
-    previous = last_decision.get(symbol)
-
-
-    if decision == "WAIT":
-
-        print("⏳ AI قال WAIT")
+        print("❌ لا توجد بيانات")
 
         return
 
 
-    if previous == decision:
+    one_minute = market_data["1m"][-100:]
+
+    one_hour = market_data["1h"][-24:]
+
+    one_day = market_data["1d"][-7:]
+
+
+    if len(one_hour) < 5:
 
         print(
-            f"🛑 نفس القرار السابق "
-            f"({decision}) - لن نكرر الصفقة"
+            f"⏳ لا توجد شموع كافية بعد "
+            f"({len(one_hour)}/5)"
         )
 
         return
 
 
-    last_decision[symbol] = decision
+    print("📊 البيانات المتوفرة:")
+
+    print(f"1m: {len(one_minute)} شمعة")
+
+    print(f"1h: {len(one_hour)} شمعة")
+
+    print(f"1d: {len(one_day)} شمعة")
 
 
-    print(
-        f"🚨 قرار جديد: {decision}"
-    )
+    prompt = f"""
+أنت نظام تحليل تداول.
+
+حلل العملة:
+
+{symbol}
+
+بيانات 1m:
+{one_minute}
+
+بيانات 1h:
+{one_hour}
+
+بيانات 1d:
+{one_day}
+
+أعطني القرار النهائي فقط في آخر سطر.
+
+يجب أن يكون آخر سطر حرفيًا واحدًا من:
+
+BUY
+SELL
+WAIT
+
+لا تكتب أي كلمة بعد القرار.
+"""
 
 
-    execute_trade(
-        symbol,
-        decision
-    )
+    print("📤 إرسال البيانات إلى DeepSeek...")
+
+    try:
+
+        completion = client.chat.completions.create(
+
+            model="deepseek-ai/deepseek-v4-pro",
+
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0,
+
+            max_tokens=200,
+
+            extra_body={
+                "chat_template_kwargs": {
+                    "thinking": False
+                }
+            },
+
+            stream=False
+
+        )
+
+
+        response = completion.choices[0].message.content or ""
+
+
+        print("")
+        print("🤖 رد DeepSeek الكامل:")
+
+        print(response)
+
+
+        text = response.upper().strip()
+
+
+        lines = text.splitlines()
+
+
+        decision = "WAIT"
+
+
+        for line in reversed(lines):
+
+            line = line.strip()
+
+            if line in ["BUY", "SELL", "WAIT"]:
+
+                decision = line
+
+                break
+
+
+        print("")
+
+        print(f"🎯 القرار النهائي: {decision}")
+
+
+        previous = last_decision.get(symbol)
+
+
+        if decision == "WAIT":
+
+            print("⏳ AI قال WAIT")
+
+            return
+
+
+        if previous == decision:
+
+            print(
+                f"🛑 نفس القرار السابق "
+                f"({decision}) - لن نكرر الصفقة"
+            )
+
+            return
+
+
+        last_decision[symbol] = decision
+
+
+        print(
+            f"🚨 قرار جديد: {decision}"
+        )
+
+
+        execute_trade(
+            symbol,
+            decision
+        )
+
+
+    except Exception as e:
+
+        print("❌ فشل الاتصال بـ DeepSeek")
+
+        print(e)
 
 
 # =====================================================
@@ -503,8 +617,15 @@ if __name__ == "__main__":
 
     print("")
     print("=" * 60)
-    print("🤖 AI TRADING BOT V2 - MEME COINS (TEST MODE)")
+    print("🤖 AI TRADING BOT V2 - MEME COINS")
     print("=" * 60)
+
+    # ✅ إضافة طباعة الـ IP الخارجي لمعرفة العنوان الذي يراه Binance
+    try:
+        outbound_ip = requests.get("https://api.ipify.org", timeout=10).text
+        print(f"🌐 OUTBOUND IP: {outbound_ip}")
+    except Exception as e:
+        print(f"⚠️ تعذر جلب الـ IP الخارجي: {e}")
 
 
     threading.Thread(
