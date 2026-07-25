@@ -80,7 +80,6 @@ SYMBOLS = [
 
 async def listen_binance_prices(symbols):
     """تستمع لبث الأسعار المباشر دون استهلاك طلبات"""
-    # تحويل BTC/USDT:USDT -> btcusdt
     streams = "/".join([
         s.split(":")[0].replace("/", "").lower() + "@ticker"
         for s in symbols
@@ -107,24 +106,7 @@ def run_websocket():
     asyncio.run(listen_binance_prices(SYMBOLS))
 
 # ==================================================
-# 6. اختبار اتصال Binance
-# ==================================================
-
-def test_binance():
-    print("")
-    print("🔌 [1] اختبار الاتصال بـ Binance...")
-    try:
-        ticker = exchange.fetch_ticker("BTC/USDT:USDT")
-        print("✅ Binance متصل بنجاح")
-        print(f"💰 BTC السعر الحالي: {ticker['last']}")
-        return True
-    except Exception as e:
-        print("❌ فشل الاتصال بـ Binance")
-        print("ERROR:", e)
-        return False
-
-# ==================================================
-# 7. جلب الشموع
+# 6. جلب الشموع
 # ==================================================
 
 def get_candles(symbol):
@@ -143,7 +125,7 @@ def get_candles(symbol):
         return None, None
 
 # ==================================================
-# 8. تحليل DeepSeek
+# 7. تحليل DeepSeek
 # ==================================================
 
 def ask_ai(symbol, daily, hourly):
@@ -195,7 +177,7 @@ WAIT
         return "WAIT"
 
 # ==================================================
-# 9. تنفيذ الصفقة
+# 8. تنفيذ الصفقة
 # ==================================================
 
 def execute_trade(symbol, decision):
@@ -237,7 +219,7 @@ def execute_trade(symbol, decision):
         print("ERROR:", e)
 
 # ==================================================
-# 10. دورة واحدة
+# 9. دورة واحدة (تم بتر test_binance نهائياً)
 # ==================================================
 
 def run_cycle():
@@ -245,24 +227,31 @@ def run_cycle():
     print("======================================")
     print("🔄 بدء دورة تداول جديدة")
     print("======================================")
-    if not test_binance():
-        print("⛔ إيقاف الدورة لأن Binance غير متصل")
-        return
+    
+    # ❌ تم بتر الدالة test_binance() من هنا نهائياً لكي لا نوقظ رادار الحظر
+    
     for symbol in SYMBOLS:
         print("")
         print(f"🔍 تحليل {symbol}")
-        daily, hourly = get_candles(symbol)
+        
+        # جلب الشموع فقط كل 5 دقائق (هذا طلب خفيف جداً لا يسبب الحظر)
+        daily, hourly = get_candles(symbol) 
+        
         if daily is None:
             continue
+            
         decision = ask_ai(symbol, daily, hourly)
+        
         if decision in ["BUY", "SELL"]:
             execute_trade(symbol, decision)
         else:
             print(f"⏳ لا توجد صفقة على {symbol}")
+            
+        # استراحة تكتيكية قصيرة بين كل عملة وأخرى لتجنب إزعاج الخوادم
         time.sleep(5)
 
 # ==================================================
-# 11. التشغيل
+# 10. التشغيل
 # ==================================================
 
 if __name__ == "__main__":
