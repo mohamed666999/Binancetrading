@@ -852,6 +852,14 @@ if __name__ == "__main__":
         print("📥 تحميل البيانات الأولية...")
         load_initial_candles()
         print("")
+        print("🧠 بدء تحليل أولي فوري لكل العملات...")
+        for symbol in SYMBOLS.values():
+            threading.Thread(
+                target=analyze_with_ai_safe,
+                args=(symbol,),
+                daemon=True
+            ).start()
+        print("")
         print("🚀 بدء Binance WebSocket...")
         start_websocket()
     else:
