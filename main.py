@@ -59,12 +59,13 @@ client = OpenAI(
 
 
 # =====================================================
-# 4. العملات
+# 4. العملات (تم استبدالها بعملات سريعة التقلب)
 # =====================================================
 
 SYMBOLS = {
-    "btcusdt": "BTC/USDT:USDT",
-    "ethusdt": "ETH/USDT:USDT"
+    "wifusdt": "WIF/USDT:USDT",
+    "1000pepeusdt": "1000PEPE/USDT:USDT",
+    "dogeusdt": "DOGE/USDT:USDT"
 }
 
 
@@ -73,12 +74,17 @@ SYMBOLS = {
 # =====================================================
 
 candles = {
-    "btcusdt": {
+    "wifusdt": {
         "1m": [],
         "1h": [],
         "1d": []
     },
-    "ethusdt": {
+    "1000pepeusdt": {
+        "1m": [],
+        "1h": [],
+        "1d": []
+    },
+    "dogeusdt": {
         "1m": [],
         "1h": [],
         "1d": []
@@ -91,8 +97,9 @@ candles = {
 # =====================================================
 
 last_decision = {
-    "BTC/USDT:USDT": None,
-    "ETH/USDT:USDT": None
+    "WIF/USDT:USDT": None,
+    "1000PEPE/USDT:USDT": None,
+    "DOGE/USDT:USDT": None
 }
 
 
@@ -609,7 +616,7 @@ if __name__ == "__main__":
 
     print("")
     print("=" * 60)
-    print("🤖 AI TRADING BOT V2")
+    print("🤖 AI TRADING BOT V2 - MEME COINS")
     print("=" * 60)
 
 
