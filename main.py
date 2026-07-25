@@ -94,13 +94,22 @@ candles = {
 
 
 # =====================================================
-# 6. منع تكرار الصفقات
+# 6. منع تكرار الصفقات + إدارة مستقلة لكل عملة
 # =====================================================
 
-last_decision = {
-    "WIF/USDT:USDT": None,
-    "1000PEPE/USDT:USDT": None,
-    "DOGE/USDT:USDT": None
+trade_state = {
+    "WIF/USDT:USDT": {
+        "last_decision": None,
+        "ai_busy": False
+    },
+    "1000PEPE/USDT:USDT": {
+        "last_decision": None,
+        "ai_busy": False
+    },
+    "DOGE/USDT:USDT": {
+        "last_decision": None,
+        "ai_busy": False
+    }
 }
 
 
@@ -175,10 +184,10 @@ def get_current_position(symbol):
 
 
 # =====================================================
-# 9. تنفيذ الصفقة
+# 9. تنفيذ الصفقة + وضع SL/TP فوراً
 # =====================================================
 
-def execute_trade(symbol, decision):
+def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
 
     print("")
     print("=" * 60)
@@ -265,6 +274,60 @@ def execute_trade(symbol, decision):
         print(f"📌 العملة: {symbol}")
 
 
+        # ✅ وضع SL و TP فوراً بعد فتح الصفقة
+        time.sleep(1)
+        position = get_current_position(symbol)
+        if position:
+            entry_price = float(position.get("entryPrice", price))
+        else:
+            entry_price = price
+
+        sl_percent = max(0.5, min(sl_percent, 5.0))
+        tp_percent = max(1.0, min(tp_percent, 10.0))
+
+        if side == "buy":
+            stop_loss = entry_price * (1 - sl_percent / 100)
+            take_profit = entry_price * (1 + tp_percent / 100)
+        else:
+            stop_loss = entry_price * (1 + sl_percent / 100)
+            take_profit = entry_price * (1 - tp_percent / 100)
+
+        print(f"🛑 SL: {stop_loss:.6f} ({sl_percent}%)")
+        print(f"🎯 TP: {take_profit:.6f} ({tp_percent}%)")
+
+        try:
+            exchange.create_order(
+                symbol,
+                "STOP_MARKET",
+                "sell" if side == "buy" else "buy",
+                quantity,
+                None,
+                {
+                    "stopPrice": round(stop_loss, 6),
+                    "reduceOnly": True
+                }
+            )
+            print("✅ SL موضوع بنجاح")
+        except Exception as sl_err:
+            print(f"⚠️ فشل وضع SL: {sl_err}")
+
+        try:
+            exchange.create_order(
+                symbol,
+                "TAKE_PROFIT_MARKET",
+                "sell" if side == "buy" else "buy",
+                quantity,
+                None,
+                {
+                    "stopPrice": round(take_profit, 6),
+                    "reduceOnly": True
+                }
+            )
+            print("✅ TP موضوع بنجاح")
+        except Exception as tp_err:
+            print(f"⚠️ فشل وضع TP: {tp_err}")
+
+
     except Exception as e:
 
         print("")
@@ -274,7 +337,7 @@ def execute_trade(symbol, decision):
 
 
 # =====================================================
-# 10. إرسال البيانات إلى DeepSeek
+# 10. إرسال البيانات إلى DeepSeek (معدّل: JSON سريع)
 # =====================================================
 
 def analyze_with_ai(symbol):
@@ -301,14 +364,12 @@ def analyze_with_ai(symbol):
 
         print("❌ لا توجد بيانات")
 
-        return
+        return None, None, None
 
 
-    one_minute = market_data["1m"][-100:]
-
-    one_hour = market_data["1h"][-24:]
-
-    one_day = market_data["1d"][-7:]
+    one_minute = market_data["1m"][-20:]
+    one_hour = market_data["1h"][-10:]
+    one_day = market_data["1d"][-5:]
 
 
     if len(one_hour) < 5:
@@ -318,7 +379,7 @@ def analyze_with_ai(symbol):
             f"({len(one_hour)}/5)"
         )
 
-        return
+        return None, None, None
 
 
     print("📊 البيانات المتوفرة:")
@@ -331,11 +392,9 @@ def analyze_with_ai(symbol):
 
 
     prompt = f"""
-أنت نظام تحليل تداول.
+أنت نظام تداول آلي سريع.
 
-حلل العملة:
-
-{symbol}
+الرمز: {symbol}
 
 بيانات 1m:
 {one_minute}
@@ -346,15 +405,16 @@ def analyze_with_ai(symbol):
 بيانات 1d:
 {one_day}
 
-أعطني القرار النهائي فقط في آخر سطر.
+أجب JSON فقط بدون شرح:
 
-يجب أن يكون آخر سطر حرفيًا واحدًا من:
+{{
+  "decision": "BUY أو SELL أو WAIT",
+  "stop_loss_percent": رقم بين 0.5 و 5,
+  "take_profit_percent": رقم بين 1 و 10,
+  "confidence": رقم بين 0 و 100
+}}
 
-BUY
-SELL
-WAIT
-
-لا تكتب أي كلمة بعد القرار.
+لا تكتب أي شيء خارج JSON.
 """
 
 
@@ -397,74 +457,93 @@ WAIT
         print(response)
 
 
-        text = response.upper().strip()
+        # ✅ محاولة قراءة JSON
+        try:
+            data = json.loads(response)
+            decision = str(data.get("decision", "WAIT")).upper()
+            sl_percent = float(data.get("stop_loss_percent", 2.0))
+            tp_percent = float(data.get("take_profit_percent", 4.0))
+            confidence = float(data.get("confidence", 50))
+        except:
+            # fallback قديم
+            text = response.upper().strip()
+            lines = text.splitlines()
+            decision = "WAIT"
+            for line in reversed(lines):
+                line = line.strip()
+                if line in ["BUY", "SELL", "WAIT"]:
+                    decision = line
+                    break
+            sl_percent = 2.0
+            tp_percent = 4.0
+            confidence = 50
 
 
-        lines = text.splitlines()
-
-
-        decision = "WAIT"
-
-
-        for line in reversed(lines):
-
-            line = line.strip()
-
-            if line in ["BUY", "SELL", "WAIT"]:
-
-                decision = line
-
-                break
-
+        # ✅ تطبيق الحدود
+        sl_percent = max(0.5, min(sl_percent, 5.0))
+        tp_percent = max(1.0, min(tp_percent, 10.0))
+        confidence = max(0, min(confidence, 100))
 
         print("")
-
         print(f"🎯 القرار النهائي: {decision}")
+        print(f"📊 الثقة: {confidence}%")
+        print(f"🛑 SL: {sl_percent}%")
+        print(f"🎯 TP: {tp_percent}%")
 
 
-        previous = last_decision.get(symbol)
+        state = trade_state.get(symbol)
 
 
         if decision == "WAIT":
-
             print("⏳ AI قال WAIT")
-
-            return
-
-
-        if previous == decision:
-
-            print(
-                f"🛑 نفس القرار السابق "
-                f"({decision}) - لن نكرر الصفقة"
-            )
-
-            return
+            return None, None, None
 
 
-        last_decision[symbol] = decision
+        if state and state["last_decision"] == decision:
+            print(f"🛑 نفس القرار السابق ({decision}) - لن نكرر الصفقة")
+            return None, None, None
 
 
-        print(
-            f"🚨 قرار جديد: {decision}"
-        )
+        if state:
+            state["last_decision"] = decision
 
 
-        execute_trade(
-            symbol,
-            decision
-        )
+        print(f"🚨 قرار جديد: {decision}")
+
+        return decision, sl_percent, tp_percent
 
 
     except Exception as e:
 
         print("❌ فشل الاتصال بـ DeepSeek")
-
         print(e)
+        return None, None, None
 
 
 # =====================================================
-# 11. Binance WebSocket
+# 11. تحليل آمن لكل عملة بشكل مستقل
+# =====================================================
+
+def analyze_with_ai_safe(symbol):
+    state = trade_state.get(symbol)
+    if not state:
+        return
+
+    if state["ai_busy"]:
+        print(f"⏳ AI مازال يحلل {symbol}")
+        return
+
+    state["ai_busy"] = True
+    try:
+        decision, sl_percent, tp_percent = analyze_with_ai(symbol)
+        if decision in ["BUY", "SELL"]:
+            execute_trade(symbol, decision, sl_percent, tp_percent)
+    finally:
+        state["ai_busy"] = False
+
+
+# =====================================================
+# 12. Binance WebSocket
 # =====================================================
 
 async def websocket_worker():
@@ -580,7 +659,7 @@ async def websocket_worker():
 
                         threading.Thread(
 
-                            target=analyze_with_ai,
+                            target=analyze_with_ai_safe,
 
                             args=(symbol,),
 
@@ -603,7 +682,7 @@ async def websocket_worker():
 
 
 # =====================================================
-# 12. التشغيل
+# 13. التشغيل
 # =====================================================
 
 def start_websocket():
@@ -617,7 +696,7 @@ if __name__ == "__main__":
 
     print("")
     print("=" * 60)
-    print("🤖 AI TRADING BOT V2 - MEME COINS")
+    print("🤖 AI TRADING BOT V2 - MEME COINS (AI SL/TP)")
     print("=" * 60)
 
     # ✅ إضافة طباعة الـ IP الخارجي لمعرفة العنوان الذي يراه Binance
