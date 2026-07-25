@@ -155,46 +155,50 @@ def calculate_rsi(values, period=14):
 
 
 def calculate_macd(values):
-    """حساب MACD line + Signal line + Histogram"""
-    if len(values) < 35:
+    """
+    MACD = EMA12 - EMA26
+    Signal = EMA9 من MACD
+    """
+    if len(values) < 50:
         return None
 
-    # EMA12 و EMA26 لكل النقاط
-    ema12_vals = []
-    ema26_vals = []
-    multiplier_12 = 2 / (12 + 1)
-    multiplier_26 = 2 / (26 + 1)
+    def ema_series(data, period):
+        if len(data) < period:
+            return []
+        multiplier = 2 / (period + 1)
+        result = [sum(data[:period]) / period]
+        for price in data[period:]:
+            previous = result[-1]
+            current = (price - previous) * multiplier + previous
+            result.append(current)
+        return result
 
-    ema12 = sum(values[:12]) / 12
-    ema26 = sum(values[:26]) / 26
-    ema12_vals.append(ema12)
-    ema26_vals.append(ema26)
+    ema12 = ema_series(values, 12)
+    ema26 = ema_series(values, 26)
 
-    for price in values[12:]:
-        ema12 = (price - ema12) * multiplier_12 + ema12
-        ema12_vals.append(ema12)
-
-    for price in values[26:]:
-        ema26 = (price - ema26) * multiplier_26 + ema26
-        ema26_vals.append(ema26)
-
-    # محاذاة الأطوال
-    min_len = min(len(ema12_vals), len(ema26_vals))
-    macd_line = [ema12_vals[i] - ema26_vals[i] for i in range(min_len)]
+    # محاذاة EMA12 مع EMA26 لنفس الشموع
+    macd_line = []
+    start_index = 26 - 12
+    for i in range(len(ema26)):
+        ema12_index = i + start_index
+        if ema12_index < len(ema12):
+            macd_line.append(ema12[ema12_index] - ema26[i])
 
     if len(macd_line) < 9:
         return None
 
-    signal_line = ema(macd_line, 9)
-    if signal_line is None:
+    signal_line = ema_series(macd_line, 9)
+    if not signal_line:
         return None
 
-    histogram = macd_line[-1] - signal_line
-    trend = "bullish" if macd_line[-1] > signal_line else "bearish"
+    macd_value = macd_line[-1]
+    signal_value = signal_line[-1]
+    histogram = macd_value - signal_value
+    trend = "bullish" if macd_value > signal_value else "bearish"
 
     return {
-        "macd": macd_line[-1],
-        "signal": signal_line,
+        "macd": macd_value,
+        "signal": signal_value,
         "histogram": histogram,
         "trend": trend
     }
@@ -287,7 +291,7 @@ def calculate_indicators(data):
     ema50 = ema(price_data, 50)
     ema200 = ema(price_data, 200)
     rsi = calculate_rsi(price_data)
-    macd = calculate_macd(price_data)  # الآن يعيد dict
+    macd = calculate_macd(price_data)
     bollinger = calculate_bollinger(price_data)
     atr = calculate_atr(data)
     adx = calculate_adx(data)
@@ -349,7 +353,7 @@ def test_binance():
 
 
 # =====================================================
-# 8. الحصول على المركز الحالي
+# 8. الحصول على المركز الحالي (معدل - إرجاع ERROR عند الفشل)
 # =====================================================
 
 def get_current_position(symbol):
@@ -367,7 +371,7 @@ def get_current_position(symbol):
     except Exception as e:
         print("⚠️ تعذر فحص المركز")
         print(e)
-        return None
+        return "ERROR"
 
 
 # =====================================================
@@ -392,8 +396,11 @@ def get_market_data(symbol):
 
 
 # =====================================================
-# 9. تنفيذ الصفقة + وضع SL/TP فوراً (مع دقة الأسعار والكميات)
+# 9. تنفيذ الصفقة + وضع SL/TP فوراً (معدل - فحص ERROR و DRY_RUN)
 # =====================================================
+
+# ✅ وضع الاختبار بدون تداول حقيقي
+DRY_RUN = True
 
 def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
     print("")
@@ -402,6 +409,11 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
     print("=" * 60)
     try:
         current_position = get_current_position(symbol)
+        
+        if current_position == "ERROR":
+            print("🛑 تعذر التحقق من المركز - لن يتم فتح صفقة")
+            return
+
         if current_position:
             print("🛑 تم إلغاء الصفقة: يوجد مركز مفتوح بالفعل")
             return
@@ -415,7 +427,6 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
         price = ticker["last"]
         notional = MARGIN_USDT * LEVERAGE
         raw_quantity = notional / price
-        # ✅ استخدام دقة الكمية المناسبة
         quantity = float(exchange.amount_to_precision(symbol, raw_quantity))
 
         if decision == "BUY":
@@ -432,6 +443,13 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
         print(f"💰 السعر: {price}")
         print(f"📦 الكمية: {quantity}")
 
+        # ✅ فحص DRY_RUN
+        if DRY_RUN:
+            print("🧪 DRY RUN: لن يتم فتح صفقة حقيقية")
+            print(f"🧪 كان سيفتح {position_name} على {symbol}")
+            print(f"🧪 SL: {sl_percent}% | TP: {tp_percent}%")
+            return
+
         print("⚙️ ضبط الرافعة...")
         exchange.set_leverage(LEVERAGE, symbol)
 
@@ -444,9 +462,12 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
         print(f"📌 الاتجاه: {position_name}")
         print(f"📌 العملة: {symbol}")
 
-        # ✅ وضع SL و TP فوراً بعد فتح الصفقة
         time.sleep(1)
         position = get_current_position(symbol)
+        if position == "ERROR":
+            print("⚠️ تعذر جلب سعر الدخول - لم يتم وضع SL/TP")
+            return
+        
         if position:
             entry_price = float(position.get("entryPrice", price))
         else:
@@ -462,7 +483,6 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
             stop_loss = entry_price * (1 + sl_percent / 100)
             take_profit = entry_price * (1 - tp_percent / 100)
 
-        # ✅ استخدام دقة السعر المناسبة
         stop_loss = float(exchange.price_to_precision(symbol, stop_loss))
         take_profit = float(exchange.price_to_precision(symbol, take_profit))
 
@@ -495,7 +515,6 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
         except Exception as tp_err:
             print(f"⚠️ فشل وضع TP: {tp_err}")
 
-        # ✅ التأكد من وجود أوامر SL/TP على المنصة
         print("🛡️ فحص أوامر الحماية...")
         try:
             open_orders = exchange.fetch_open_orders(symbol)
@@ -512,7 +531,7 @@ def execute_trade(symbol, decision, sl_percent=2.0, tp_percent=4.0):
 
 
 # =====================================================
-# AI ANALYSIS V3 (مع تحسينات MACD وفلتر الاتجاه)
+# AI ANALYSIS V3
 # =====================================================
 
 def analyze_with_ai(symbol):
@@ -538,8 +557,8 @@ def analyze_with_ai(symbol):
         print(f"⏳ شموع الساعة غير كافية: {len(one_hour)}/50")
         return None, None, None
 
-    if len(one_day) < 50:  # ✅ تعديل الحد إلى 50 بدلاً من 5
-        print(f"⏳ شموع اليوم غير كافية: {len(one_day)}/50")
+    if len(one_day) < 210:
+        print(f"⏳ شموع اليوم غير كافية: {len(one_day)}/210")
         return None, None, None
 
     print("📊 حساب المؤشرات...")
@@ -559,7 +578,6 @@ def analyze_with_ai(symbol):
     print(f"📉 ADX 1H: {indicators_1h['adx']}")
     print(f"📦 Volume Ratio: {indicators_1h['volume_ratio']}")
 
-    # ✅ فلتر الاتجاه: إذا كان الإطار اليومي والساعة متناقضين → WAIT
     ema50_1d = indicators_1d.get("ema50")
     ema50_1h = indicators_1h.get("ema50")
     if ema50_1d is not None and ema50_1h is not None:
@@ -691,7 +709,7 @@ confidence: بين 0 و 100
 
 
 # =====================================================
-# 11. تحليل آمن لكل عملة (مع فحص المركز قبل استدعاء AI)
+# 11. تحليل آمن لكل عملة (معدل - فحص ERROR)
 # =====================================================
 
 def analyze_with_ai_safe(symbol):
@@ -702,8 +720,12 @@ def analyze_with_ai_safe(symbol):
         print(f"⏳ AI مازال يحلل {symbol}")
         return
 
-    # ✅ فحص المركز الحالي قبل إرسال الطلب إلى AI
     position = get_current_position(symbol)
+    
+    if position == "ERROR":
+        print(f"🛑 تعذر التأكد من المركز {symbol} - إلغاء التحليل")
+        return
+
     if position:
         print(f"📌 {symbol} لديه صفقة مفتوحة - تخطي التحليل")
         return
@@ -727,7 +749,6 @@ async def websocket_worker():
         streams.append(f"{symbol}@kline_1m")
         streams.append(f"{symbol}@kline_1h")
         streams.append(f"{symbol}@kline_1d")
-    # ✅ استخدام fstream للعقود الآجلة
     stream_url = "wss://fstream.binance.com/stream?streams=" + "/".join(streams)
 
     print("")
@@ -739,6 +760,7 @@ async def websocket_worker():
         try:
             async with websockets.connect(stream_url, ping_interval=20, ping_timeout=20) as websocket:
                 print("✅ WebSocket متصل بنجاح")
+                print("📡 في انتظار بيانات الأسعار...")
                 async for message in websocket:
                     data = json.loads(message)
                     payload = data.get("data", {})
@@ -759,7 +781,6 @@ async def websocket_worker():
                         float(kline["v"])
                     ]
 
-                    # تحديث أو إضافة الشمعة (عدم تكرار نفس الشمعة)
                     existing = candles[symbol_key][interval]
                     if existing and existing[-1][0] == candle[0]:
                         existing[-1] = candle
@@ -768,7 +789,7 @@ async def websocket_worker():
                     if len(existing) > 300:
                         candles[symbol_key][interval] = existing[-300:]
 
-                    print(f"📡 {symbol_key.upper()} {interval} السعر: {candle[4]}", end="\r")
+                    print(f"📡 {symbol_key.upper()} | {interval} | السعر: {candle[4]}", flush=True)
 
                     if is_closed and interval == "1h":
                         symbol = SYMBOLS[symbol_key]
