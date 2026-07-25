@@ -2,3 +2,4 @@ ccxt
 openai
 flask
 gunicorn
+websockets
