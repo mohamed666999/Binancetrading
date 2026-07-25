@@ -284,182 +284,69 @@ def analyze_with_ai(symbol):
     print("=" * 60)
 
 
-    market_data = None
+    # ============================================
+    # ⚠️ تم تعطيل DeepSeek مؤقتاً للتجربة
+    # ============================================
+    if symbol == "DOGE/USDT:USDT":
+        decision = "BUY"  # سيقوم بفتح صفقة Long على الدوجكوين فوراً
+        print("⚠️ [وضع التجربة] تخطي DeepSeek - قرار إجباري: BUY")
+    else:
+        decision = "WAIT" # سيتجاهل باقي العملات
+        print("⚠️ [وضع التجربة] تخطي DeepSeek - قرار إجباري: WAIT")
 
 
-    for key, value in SYMBOLS.items():
+    # الكود الأصلي لـ DeepSeek تم تعطيله مؤقتاً
+    # market_data = None
+    # for key, value in SYMBOLS.items():
+    #     if value == symbol:
+    #         market_data = candles[key]
+    #         break
+    # if not market_data:
+    #     print("❌ لا توجد بيانات")
+    #     return
+    # one_minute = market_data["1m"][-100:]
+    # one_hour = market_data["1h"][-24:]
+    # one_day = market_data["1d"][-7:]
+    # ... باقي كود DeepSeek
 
-        if value == symbol:
 
-            market_data = candles[key]
+    print("")
 
-            break
+    print(f"🎯 القرار النهائي: {decision}")
 
 
-    if not market_data:
+    previous = last_decision.get(symbol)
 
-        print("❌ لا توجد بيانات")
+
+    if decision == "WAIT":
+
+        print("⏳ AI قال WAIT")
 
         return
 
 
-    one_minute = market_data["1m"][-100:]
-
-    one_hour = market_data["1h"][-24:]
-
-    one_day = market_data["1d"][-7:]
-
-
-    if len(one_hour) < 5:
+    if previous == decision:
 
         print(
-            f"⏳ لا توجد شموع كافية بعد "
-            f"({len(one_hour)}/5)"
+            f"🛑 نفس القرار السابق "
+            f"({decision}) - لن نكرر الصفقة"
         )
 
         return
 
 
-    print("📊 البيانات المتوفرة:")
+    last_decision[symbol] = decision
 
-    print(f"1m: {len(one_minute)} شمعة")
 
-    print(f"1h: {len(one_hour)} شمعة")
+    print(
+        f"🚨 قرار جديد: {decision}"
+    )
 
-    print(f"1d: {len(one_day)} شمعة")
 
-
-    prompt = f"""
-أنت نظام تحليل تداول.
-
-حلل العملة:
-
-{symbol}
-
-بيانات 1m:
-{one_minute}
-
-بيانات 1h:
-{one_hour}
-
-بيانات 1d:
-{one_day}
-
-أعطني القرار النهائي فقط في آخر سطر.
-
-يجب أن يكون آخر سطر حرفيًا واحدًا من:
-
-BUY
-SELL
-WAIT
-
-لا تكتب أي كلمة بعد القرار.
-"""
-
-
-    print("📤 إرسال البيانات إلى DeepSeek...")
-
-    try:
-
-        completion = client.chat.completions.create(
-
-            model="deepseek-ai/deepseek-v4-pro",
-
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-
-            temperature=0,
-
-            max_tokens=200,
-
-            extra_body={
-                "chat_template_kwargs": {
-                    "thinking": False
-                }
-            },
-
-            stream=False
-
-        )
-
-
-        response = completion.choices[0].message.content or ""
-
-
-        print("")
-        print("🤖 رد DeepSeek الكامل:")
-
-        print(response)
-
-
-        text = response.upper().strip()
-
-
-        lines = text.splitlines()
-
-
-        decision = "WAIT"
-
-
-        for line in reversed(lines):
-
-            line = line.strip()
-
-            if line in ["BUY", "SELL", "WAIT"]:
-
-                decision = line
-
-                break
-
-
-        print("")
-
-        print(f"🎯 القرار النهائي: {decision}")
-
-
-        previous = last_decision.get(symbol)
-
-
-        if decision == "WAIT":
-
-            print("⏳ AI قال WAIT")
-
-            return
-
-
-        if previous == decision:
-
-            print(
-                f"🛑 نفس القرار السابق "
-                f"({decision}) - لن نكرر الصفقة"
-            )
-
-            return
-
-
-        last_decision[symbol] = decision
-
-
-        print(
-            f"🚨 قرار جديد: {decision}"
-        )
-
-
-        execute_trade(
-            symbol,
-            decision
-        )
-
-
-    except Exception as e:
-
-        print("❌ فشل الاتصال بـ DeepSeek")
-
-        print(e)
+    execute_trade(
+        symbol,
+        decision
+    )
 
 
 # =====================================================
@@ -616,7 +503,7 @@ if __name__ == "__main__":
 
     print("")
     print("=" * 60)
-    print("🤖 AI TRADING BOT V2 - MEME COINS")
+    print("🤖 AI TRADING BOT V2 - MEME COINS (TEST MODE)")
     print("=" * 60)
 
 
