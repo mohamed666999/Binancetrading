@@ -112,10 +112,12 @@ class SignalResult:
     is_pullback:bool=False; signals:List[str]=field(default_factory=list)
     reasons:List[str]=field(default_factory=list); sl_percent:float=2.0; tp_percent:float=4.0
 
+# ✅ تعديل 1: إضافة error
 @dataclass
 class AIResult:
     decision:str="WAIT"; confidence:float=0.0; explanation:str=""
     risk_warnings:List[str]=field(default_factory=list); regime:str="unknown"
+    error:bool=False
 
 @dataclass
 class FinalDecision:
@@ -590,7 +592,7 @@ signal_engine=SignalEngine()
 
 
 # ================================================================
-#  ✅ AI ANALYST (55%) — NVIDIA Nemotron مع /think
+#  AI ANALYST (55%) — NVIDIA Nemotron
 # ================================================================
 class AIAnalyst:
     def analyze(self, symbol, i1h, i1d, trend) -> AIResult:
@@ -635,7 +637,6 @@ class AIAnalyst:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"regime":"trending أو ranging أو volatile","explanation":"شرح مختصر بالعربية","risk_warnings":["تحذير1"]}}"""
 
         try:
-            # ✅ NVIDIA Nemotron مع /think
             comp = ai_client.chat.completions.create(
                 model=CFG.ai_model,
                 messages=[
@@ -652,7 +653,6 @@ class AIAnalyst:
             if cleaned.startswith("```"):
                 lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
                 cleaned = "\n".join(lines).strip()
-            # استخراج JSON من الرد (قد يحتوي على نص قبل/بعد)
             json_start = cleaned.find("{")
             json_end = cleaned.rfind("}") + 1
             if json_start >= 0 and json_end > json_start:
@@ -666,8 +666,10 @@ class AIAnalyst:
             result.regime = str(dj.get("regime","unknown"))
             logger.info(f"AI {symbol}: {result.decision} | Conf={result.confidence} | {result.regime} | {result.explanation[:80]}")
         except Exception as e:
-            logger.warning(f"AI fail {symbol}: {e}")
-            result.decision = "WAIT"; result.confidence = 0
+            # ✅ تعديل 2: تمييز الخطأ عن الرفض
+            logger.warning(f"AI ERROR {symbol}: {e}")
+            result.decision = "WAIT"; result.confidence = 0; result.error = True
+            result.explanation = f"AI_ERROR: {str(e)[:100]}"
         return result
 
 ai_analyst = AIAnalyst()
@@ -686,6 +688,23 @@ def merge_decision(signal, ai, trend):
     if signal.decision == Decision.BUY: sig_dir = "BUY"; sig_strength = (signal.buy_score / signal.max_score) * 100
     elif signal.decision == Decision.SELL: sig_dir = "SELL"; sig_strength = (signal.sell_score / signal.max_score) * 100
     ai_dir = ai.decision; ai_strength = ai.confidence
+
+    # ✅ تعديل 3: إذا AI فشل (خطأ/بطء) → اعتمد على Signal فقط
+    if ai.error:
+        if sig_dir in ("BUY","SELL") and sig_strength >= 50:
+            final.final_score = sig_strength
+            final.decision = Decision.BUY if sig_dir == "BUY" else Decision.SELL
+            final.reasons = [f"AI_ERROR -> SIGNAL ONLY {sig_dir}({sig_strength:.0f})"] + signal.reasons
+            final.signal_score = sig_strength; final.ai_score = 0
+            final.ai_explanation = ai.explanation; final.ai_regime = "ERROR"
+            return final
+        else:
+            final.decision = Decision.WAIT; final.final_score = 0
+            final.reasons = [f"AI_ERROR + SIGNAL WEAK({sig_strength:.0f})"] + signal.reasons
+            final.signal_score = sig_strength; final.ai_score = 0
+            final.ai_explanation = ai.explanation; final.ai_regime = "ERROR"
+            return final
+
     final.signal_score = sig_strength; final.ai_score = ai_strength
     final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
     if ai_dir == "WAIT" and ai_strength >= 60:
@@ -792,9 +811,9 @@ class MarketScanner:
         logger.info(f"<<< SIGNAL {sym}: {signal.decision.value} | B={signal.buy_score} S={signal.sell_score}/{signal.max_score} | PB={signal.is_pullback} | {signal.signals}")
         ai=ai_analyst.analyze(sym,i1h,i1d,trend)
         final=merge_decision(signal,ai,trend)
-        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | AI={ai.decision}({ai.confidence}) SIG={signal.decision.value}(B:{signal.buy_score}/S:{signal.sell_score}) | {final.reasons[0] if final.reasons else ''}")
+        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | AI={ai.decision}({ai.confidence}){'[ERROR]' if ai.error else ''} SIG={signal.decision.value}(B:{signal.buy_score}/S:{signal.sell_score}) | {final.reasons[0] if final.reasons else ''}")
         bot_stats["last_analysis"][sym]={"decision":final.decision.value,"final_score":round(final.final_score,1),
-            "ai":f"{ai.decision}({ai.confidence})","signal":f"B:{signal.buy_score}/S:{signal.sell_score}",
+            "ai":f"{ai.decision}({ai.confidence}){'[ERR]' if ai.error else ''}","signal":f"B:{signal.buy_score}/S:{signal.sell_score}",
             "regime":ai.regime,"time":datetime.now(timezone.utc).isoformat()}
         if final.decision==Decision.WAIT: return
         if final.final_score<CFG.min_final_score:
