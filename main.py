@@ -2,7 +2,7 @@
 """
   AI TRADING BOT V8 LIVE
   - LIVE trading (not paper)
-  - AI = 55% of final decision
+  - AI = 55% of final decision (NVIDIA Nemotron)
   - Signal Engine = 45%
   - IP shown at deploy for Binance whitelist
 """
@@ -35,8 +35,8 @@ class Config:
     binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
     binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
     nvidia_api_key: str = "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"
-    ai_model: str = "nvidia/llama-3_3-nemotron-super-49b-v1_5"
-    # ✅ LIVE
+    ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+
     dry_run: bool = False
 
     leverage: int = 10
@@ -47,12 +47,10 @@ class Config:
     max_sl_percent: float = 5.0
     max_tp_percent: float = 10.0
 
-    # ✅ AI Weight
     ai_weight: float = 0.55
     signal_weight: float = 0.45
     min_final_score: float = 45.0
 
-    # Signal thresholds
     min_score_to_enter: int = 4
     rsi_extreme_overbought: float = 82.0
     rsi_extreme_oversold: float = 18.0
@@ -121,29 +119,16 @@ class AIResult:
 
 @dataclass
 class FinalDecision:
-    decision:Decision=Decision.WAIT
-    final_score:float=0.0
-    signal_score:float=0.0
-    ai_score:float=0.0
-    ai_explanation:str=""
-    ai_regime:str=""
-    sl_percent:float=2.0; tp_percent:float=4.0
-    is_pullback:bool=False
-    signals:List[str]=field(default_factory=list)
-    reasons:List[str]=field(default_factory=list)
+    decision:Decision=Decision.WAIT; final_score:float=0.0; signal_score:float=0.0
+    ai_score:float=0.0; ai_explanation:str=""; ai_regime:str=""
+    sl_percent:float=2.0; tp_percent:float=4.0; is_pullback:bool=False
+    signals:List[str]=field(default_factory=list); reasons:List[str]=field(default_factory=list)
 
 @dataclass
 class TrendConfirmation:
     direction:TrendDirection=TrendDirection.NEUTRAL; entry_quality:EntryQuality=EntryQuality.BLOCKED
     daily_trend:str=""; hourly_trend:str=""; minute_timing:str=""; strength:float=0.0
     reasons:List[str]=field(default_factory=list)
-
-@dataclass
-class TradeRecord:
-    symbol:str=""; side:str=""; entry_price:float=0.0; quantity:float=0.0
-    sl_price:float=0.0; tp_price:float=0.0; sl_order_id:str=""; tp_order_id:str=""
-    entry_order_id:str=""; confidence:float=0.0; reason:str=""; timestamp:str=""
-    status:str="OPEN"; mode:str="LIVE"
 
 
 # ================================================================
@@ -224,7 +209,7 @@ def run_server(): app.run(host="0.0.0.0",port=CFG.flask_port,debug=False,use_rel
 
 
 # ================================================================
-#  EXCHANGE
+#  EXCHANGE + AI
 # ================================================================
 exchange_public = ccxt.binance({
     "enableRateLimit": True,
@@ -235,26 +220,26 @@ exchange = ccxt.binance({
     "enableRateLimit": True,
     "options": {"defaultType": "swap", "adjustForTimeDifference": True},
 })
-ai_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=CFG.nvidia_api_key)
+ai_client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=CFG.nvidia_api_key,
+)
 
 
 # ================================================================
-#  ✅ IP MONITOR - يظهر بوضوح عند Deploy
+#  IP MONITOR
 # ================================================================
 def get_ip():
     try: return requests.get("https://api.ipify.org", timeout=10).text
     except: return "UNKNOWN"
 
 def show_deploy_ip():
-    """✅ يعرض IP بشكل بارز جداً عند أول تشغيل"""
     ip = get_ip()
     bot_stats["current_ip"] = ip
     bot_stats["deploy_ip"] = ip
     logger.critical("=" * 60)
-    logger.critical(f"  🌐🌐🌐  DEPLOY IP:  {ip}  🌐🌐🌐")
-    logger.critical(f"  👉 أضف هذا IP في Binance API Management")
-    logger.critical(f"  👉 Binance -> API Management -> Edit -> IP Whitelist")
-    logger.critical(f"  👉 أضف: {ip}")
+    logger.critical(f"  DEPLOY IP:  {ip}")
+    logger.critical(f"  Add this IP in Binance API Management -> IP Whitelist")
     logger.critical("=" * 60)
     return ip
 
@@ -269,12 +254,9 @@ class IPMonitor:
             try:
                 ip = get_ip()
                 if ip != self.ip and ip != "UNKNOWN":
-                    logger.critical("=" * 60)
-                    logger.critical(f"  🔄🔄🔄  IP CHANGED: {self.ip} -> {ip}")
-                    logger.critical(f"  👉 أضف IP الجديد في Binance: {ip}")
-                    logger.critical("=" * 60)
-                    self.ip = ip
-                    bot_stats["current_ip"] = ip
+                    logger.critical(f"  IP CHANGED: {self.ip} -> {ip}")
+                    logger.critical(f"  Add new IP in Binance: {ip}")
+                    self.ip = ip; bot_stats["current_ip"] = ip
             except: pass
 
 ip_monitor = IPMonitor()
@@ -420,12 +402,11 @@ def calc_volume_ratio(data,p=20):
 def calculate_indicators(data):
     if len(data)<50: return None
     c=closes(data); price=c[-1]
-    r={"price":price,"ema9":ema(c,9),"ema21":ema(c,21),"ema50":ema(c,50),
+    return {"price":price,"ema9":ema(c,9),"ema21":ema(c,21),"ema50":ema(c,50),
        "ema200":ema(c,200),"rsi":calc_rsi(c),"macd":calc_macd(c),
        "bollinger":calc_bollinger(c),"stochastic":calc_stochastic(data),
        "atr":calc_atr(data),"adx":calc_adx(data),"ema_cross":calc_ema_cross(c),
        "volume_ratio":calc_volume_ratio(data)}
-    return r
 
 
 # ================================================================
@@ -578,7 +559,6 @@ class SignalEngine:
                 r.is_pullback=True
                 if dpb=="BULLISH": bs+=2; sigs.append(f"PB_{pb['type']}")
                 elif dpb=="BEARISH": ss+=2; sigs.append(f"PB_{pb['type']}")
-        # Filters
         if i1h and i1h.get("rsi") is not None:
             rsi=i1h["rsi"]; sk=i1h.get("stochastic",{}).get("k",50) if i1h.get("stochastic") else 50
             av=i1h.get("adx",{}).get("adx",0) if i1h.get("adx") else 0
@@ -610,14 +590,11 @@ signal_engine=SignalEngine()
 
 
 # ================================================================
-#  ✅ AI ANALYST (55% من القرار) - يقرأ المؤشرات فقط
+#  ✅ AI ANALYST (55%) — NVIDIA Nemotron مع /think
 # ================================================================
 class AIAnalyst:
     def analyze(self, symbol, i1h, i1d, trend) -> AIResult:
-        """AI يقرأ كل المؤشرات ويعطي قراره المستقل"""
         result = AIResult()
-
-        # بناء وصف شامل للمؤشرات
         ind_summary = []
         if i1h:
             if i1h.get("rsi") is not None: ind_summary.append(f"RSI_1H={i1h['rsi']:.1f}")
@@ -639,7 +616,7 @@ class AIAnalyst:
 
         trend_info = f"1D={trend.daily_trend} 1H={trend.hourly_trend} DIR={trend.direction.value} STR={trend.strength}%"
 
-        prompt = f"""أنت محلل تداول محترف. اقرأ المؤشرات التالية وأعطِ قرارك.
+        user_prompt = f"""أنت محلل تداول محترف. اقرأ المؤشرات التالية وأعطِ قرارك.
 
 العملة: {symbol}
 الاتجاه: {trend_info}
@@ -658,15 +635,28 @@ class AIAnalyst:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"regime":"trending أو ranging أو volatile","explanation":"شرح مختصر بالعربية","risk_warnings":["تحذير1"]}}"""
 
         try:
+            # ✅ NVIDIA Nemotron مع /think
             comp = ai_client.chat.completions.create(
                 model=CFG.ai_model,
-                messages=[{"role":"user","content":prompt}],
-                temperature=0, max_tokens=400, stream=False)
+                messages=[
+                    {"role": "system", "content": "/think"},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.6,
+                top_p=0.95,
+                max_tokens=1024,
+                stream=False,
+            )
             raw = comp.choices[0].message.content or ""
             cleaned = raw.strip()
             if cleaned.startswith("```"):
                 lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
                 cleaned = "\n".join(lines).strip()
+            # استخراج JSON من الرد (قد يحتوي على نص قبل/بعد)
+            json_start = cleaned.find("{")
+            json_end = cleaned.rfind("}") + 1
+            if json_start >= 0 and json_end > json_start:
+                cleaned = cleaned[json_start:json_end]
             dj = json.loads(cleaned)
             result.decision = str(dj.get("decision","WAIT")).upper()
             if result.decision not in ("BUY","SELL","WAIT"): result.decision = "WAIT"
@@ -674,72 +664,45 @@ class AIAnalyst:
             result.explanation = str(dj.get("explanation",""))
             result.risk_warnings = dj.get("risk_warnings",[])
             result.regime = str(dj.get("regime","unknown"))
-            logger.info(f"🤖 AI {symbol}: {result.decision} | Conf={result.confidence} | {result.regime} | {result.explanation[:80]}")
+            logger.info(f"AI {symbol}: {result.decision} | Conf={result.confidence} | {result.regime} | {result.explanation[:80]}")
         except Exception as e:
             logger.warning(f"AI fail {symbol}: {e}")
             result.decision = "WAIT"; result.confidence = 0
         return result
 
-
 ai_analyst = AIAnalyst()
 
 
 # ================================================================
-#  ✅ FINAL DECISION = 55% AI + 45% Signal
+#  FINAL DECISION = 55% AI + 45% Signal
 # ================================================================
-def merge_decision(signal: SignalResult, ai: AIResult, trend: TrendConfirmation) -> FinalDecision:
+def merge_decision(signal, ai, trend):
     final = FinalDecision()
     final.is_pullback = signal.is_pullback
     final.signals = signal.signals
     final.sl_percent = signal.sl_percent
     final.tp_percent = signal.tp_percent
-
-    # Signal strength (0-100)
-    sig_dir = "WAIT"
-    sig_strength = 0
-    if signal.decision == Decision.BUY:
-        sig_dir = "BUY"; sig_strength = (signal.buy_score / signal.max_score) * 100
-    elif signal.decision == Decision.SELL:
-        sig_dir = "SELL"; sig_strength = (signal.sell_score / signal.max_score) * 100
-
-    # AI strength
-    ai_dir = ai.decision
-    ai_strength = ai.confidence
-
-    final.signal_score = sig_strength
-    final.ai_score = ai_strength
-    final.ai_explanation = ai.explanation
-    final.ai_regime = ai.regime
-
-    # ✅ إذا AI يقول WAIT بثقة عالية → WAIT (AI له 55%)
+    sig_dir = "WAIT"; sig_strength = 0
+    if signal.decision == Decision.BUY: sig_dir = "BUY"; sig_strength = (signal.buy_score / signal.max_score) * 100
+    elif signal.decision == Decision.SELL: sig_dir = "SELL"; sig_strength = (signal.sell_score / signal.max_score) * 100
+    ai_dir = ai.decision; ai_strength = ai.confidence
+    final.signal_score = sig_strength; final.ai_score = ai_strength
+    final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
     if ai_dir == "WAIT" and ai_strength >= 60:
-        final.decision = Decision.WAIT
-        final.final_score = 0
-        final.reasons = [f"AI WAIT (conf={ai_strength})"] + signal.reasons
-        return final
-
-    # ✅ إذا AI و Signal متفقان
+        final.decision = Decision.WAIT; final.final_score = 0
+        final.reasons = [f"AI WAIT (conf={ai_strength})"] + signal.reasons; return final
     if ai_dir == sig_dir and ai_dir != "WAIT":
         final.final_score = CFG.ai_weight * ai_strength + CFG.signal_weight * sig_strength
         final.decision = Decision.BUY if ai_dir == "BUY" else Decision.SELL
-        final.reasons = [f"AGREED {ai_dir} | AI={ai_strength} SIG={sig_strength:.0f}"] + signal.reasons
-        return final
-
-    # ✅ إذا مختلفان → AI يقرر (55%)
+        final.reasons = [f"AGREED {ai_dir} | AI={ai_strength} SIG={sig_strength:.0f}"] + signal.reasons; return final
     if ai_dir in ("BUY","SELL") and ai_strength >= 55:
         final.final_score = CFG.ai_weight * ai_strength + CFG.signal_weight * sig_strength
         final.decision = Decision.BUY if ai_dir == "BUY" else Decision.SELL
-        final.reasons = [f"AI OVERRIDE {ai_dir} | AI={ai_strength} SIG_dir={sig_dir} SIG={sig_strength:.0f}"] + signal.reasons
-        return final
-
-    # ✅ إذا Signal قوي لكن AI غير واثق
+        final.reasons = [f"AI OVERRIDE {ai_dir} | AI={ai_strength} SIG={sig_dir}({sig_strength:.0f})"] + signal.reasons; return final
     if sig_dir in ("BUY","SELL") and sig_strength >= 70 and ai_strength < 40:
         final.final_score = CFG.ai_weight * ai_strength + CFG.signal_weight * sig_strength
         final.decision = Decision.BUY if sig_dir == "BUY" else Decision.SELL
-        final.reasons = [f"SIGNAL STRONG {sig_dir} | SIG={sig_strength:.0f} AI_low={ai_strength}"] + signal.reasons
-        return final
-
-    # لا اتفاق كافٍ
+        final.reasons = [f"SIG STRONG {sig_dir} | SIG={sig_strength:.0f} AI_low={ai_strength}"] + signal.reasons; return final
     final.decision = Decision.WAIT
     final.final_score = CFG.ai_weight * ai_strength + CFG.signal_weight * sig_strength
     final.reasons = [f"NO CONSENSUS | AI={ai_dir}({ai_strength}) SIG={sig_dir}({sig_strength:.0f})"] + signal.reasons
@@ -825,30 +788,18 @@ class MarketScanner:
         trend=confirm_trend(i1m,i1h,i1d)
         logger.info(f">>> {sym} | 1D={trend.daily_trend} | 1H={trend.hourly_trend} | DIR={trend.direction.value} | QUALITY={trend.entry_quality.value} | STR={trend.strength}%")
         for reason in trend.reasons: logger.info(f"   - {reason}")
-
-        # Signal Engine (45%)
         signal=signal_engine.evaluate(sym,trend,i1m,i1h,i1d,d1h)
         logger.info(f"<<< SIGNAL {sym}: {signal.decision.value} | B={signal.buy_score} S={signal.sell_score}/{signal.max_score} | PB={signal.is_pullback} | {signal.signals}")
-
-        # ✅ AI يقرأ المؤشرات (55%)
         ai=ai_analyst.analyze(sym,i1h,i1d,trend)
-
-        # ✅ الدمج: 55% AI + 45% Signal
         final=merge_decision(signal,ai,trend)
-
-        logger.info(f"🎯 FINAL {sym}: {final.decision.value} | FinalScore={final.final_score:.1f} | AI={ai.decision}({ai.confidence}) SIG={signal.decision.value}(B:{signal.buy_score}/S:{signal.sell_score}) | {final.reasons[0] if final.reasons else ''}")
-
-        bot_stats["last_analysis"][sym]={
-            "decision":final.decision.value,"final_score":round(final.final_score,1),
+        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | AI={ai.decision}({ai.confidence}) SIG={signal.decision.value}(B:{signal.buy_score}/S:{signal.sell_score}) | {final.reasons[0] if final.reasons else ''}")
+        bot_stats["last_analysis"][sym]={"decision":final.decision.value,"final_score":round(final.final_score,1),
             "ai":f"{ai.decision}({ai.confidence})","signal":f"B:{signal.buy_score}/S:{signal.sell_score}",
             "regime":ai.regime,"time":datetime.now(timezone.utc).isoformat()}
-
         if final.decision==Decision.WAIT: return
         if final.final_score<CFG.min_final_score:
             logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_final_score}"); return
-
         execute_trade(sym,final)
-
     def _load(self,sk,sym):
         for tf in CFG.timeframes:
             try:
@@ -871,7 +822,7 @@ def get_pos(sym):
     except Exception as e: logger.error(f"Pos {sym}: {e}"); return "ERROR"
 
 def emergency_close(sym,reason):
-    logger.critical(f"🚨 EMERGENCY: {sym} | {reason}")
+    logger.critical(f"EMERGENCY: {sym} | {reason}")
     try:
         pos=get_pos(sym)
         if pos and pos!="ERROR":
@@ -881,7 +832,7 @@ def emergency_close(sym,reason):
                 exchange.create_market_order(sym,cs,ct,params={"reduceOnly":True})
     except Exception as e: logger.critical(f"Emergency fail: {e}")
 
-def execute_trade(sym, final: FinalDecision):
+def execute_trade(sym, final):
     with execution_lock:
         try:
             pos=get_pos(sym)
@@ -891,15 +842,12 @@ def execute_trade(sym, final: FinalDecision):
             if db.open_count()>=CFG.max_open_positions: logger.info("Positions full"); return
             st=trade_state.get(sym,{})
             if time.time()-st.get("t",0)<CFG.cooldown_seconds: logger.info(f"Cooldown: {sym}"); return
-
             ticker=exchange_public.fetch_ticker(sym); price=ticker["last"]
             raw_qty=(CFG.margin_usdt*CFG.leverage)/price
             qty=float(exchange.amount_to_precision(sym,raw_qty))
             side="buy" if final.decision==Decision.BUY else "sell"
             pname="LONG" if side=="buy" else "SHORT"
-
-            logger.info(f"🚀 LIVE TRADE {sym} | {pname} | {price} | FinalScore={final.final_score:.1f} | AI={final.ai_explanation[:60]}")
-
+            logger.info(f"LIVE TRADE {sym} | {pname} | {price} | Score={final.final_score:.1f} | AI={final.ai_explanation[:60]}")
             exchange.set_leverage(CFG.leverage,sym)
             order=exchange.create_market_order(sym,side,qty)
             eoid=order.get("id",""); time.sleep(1)
@@ -907,8 +855,7 @@ def execute_trade(sym, final: FinalDecision):
             if p=="ERROR" or p is None: logger.critical(f"No pos: {sym}"); return
             entry=float(p.get("entryPrice",price)); aqty=abs(float(p.get("contracts",0)))
             if aqty<=0: emergency_close(sym,"zero qty"); return
-            logger.info(f"📦 qty={aqty} entry={entry}")
-
+            logger.info(f"qty={aqty} entry={entry}")
             sl_p=max(0.5,min(final.sl_percent,CFG.max_sl_percent))
             tp_p=max(1.0,min(final.tp_percent,CFG.max_tp_percent))
             if side=="buy": sl_price=entry*(1-sl_p/100); tp_price=entry*(1+tp_p/100)
@@ -916,26 +863,23 @@ def execute_trade(sym, final: FinalDecision):
             sl_price=float(exchange.price_to_precision(sym,sl_price))
             tp_price=float(exchange.price_to_precision(sym,tp_price))
             cs="sell" if side=="buy" else "buy"
-
             sloid=""
             try:
                 slo=exchange.create_order(sym,"STOP_MARKET",cs,aqty,None,
                     {"stopPrice":sl_price,"reduceOnly":True,"workingType":"MARK_PRICE"})
-                sloid=slo.get("id",""); logger.info(f"✅ SL: {sl_price}")
+                sloid=slo.get("id",""); logger.info(f"SL: {sl_price}")
             except Exception as e:
-                logger.critical(f"🚨 SL fail: {e}"); emergency_close(sym,"SL fail"); return
-
+                logger.critical(f"SL fail: {e}"); emergency_close(sym,"SL fail"); return
             tpoid=""
             try:
                 tpo=exchange.create_order(sym,"TAKE_PROFIT_MARKET",cs,aqty,None,
                     {"stopPrice":tp_price,"reduceOnly":True,"workingType":"MARK_PRICE"})
-                tpoid=tpo.get("id",""); logger.info(f"✅ TP: {tp_price}")
+                tpoid=tpo.get("id",""); logger.info(f"TP: {tp_price}")
             except Exception as e:
                 logger.error(f"TP fail: {e}")
                 try: exchange.cancel_order(sloid,sym)
                 except: pass
                 emergency_close(sym,"TP fail"); return
-
             tid=db.insert_trade(symbol=sym,side=pname,mode="LIVE",entry_price=entry,
                 quantity=aqty,sl_price=sl_price,tp_price=tp_price,
                 sl_order_id=sloid,tp_order_id=tpoid,entry_order_id=eoid,
@@ -943,7 +887,7 @@ def execute_trade(sym, final: FinalDecision):
                 reason=f"AI={final.ai_score:.0f} SIG={final.signal_score:.0f} Final={final.final_score:.1f} | {final.ai_explanation[:100]}",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 ai_explanation=final.ai_explanation, final_score=final.final_score)
-            logger.info(f"💾 Trade #{tid}"); st["t"]=time.time()
+            logger.info(f"Trade #{tid}"); st["t"]=time.time()
         except Exception as e:
             logger.error(f"Exec: {e}",exc_info=True); emergency_close(sym,str(e))
 
@@ -975,7 +919,7 @@ class PositionMonitor:
                 rpnl=(ep-entry)*rq if trade["side"]=="LONG" else (entry-ep)*rq
             notional=entry*qty if entry*qty else 1; pp=(rpnl/notional)*100
             db.close_trade(trade["id"],ep,rpnl,pp,comm,reason)
-            logger.info(f"📊 CLOSED {sym} | {reason} | PnL={rpnl:.4f} ({pp:.2f}%) | Comm={comm:.4f}")
+            logger.info(f"CLOSED {sym} | {reason} | PnL={rpnl:.4f} ({pp:.2f}%) | Comm={comm:.4f}")
             self._cancel(sym,trade)
     def _csz(self,sym):
         try: return float(exchange.market(sym).get("contractSize",1) or 1)
@@ -1034,14 +978,13 @@ async def ws_worker():
 #  MAIN
 # ================================================================
 def main():
-    # ✅ أول شيء: عرض IP
     ip = show_deploy_ip()
-
     logger.info("="*60)
-    logger.info("🤖 AI TRADING BOT V8 — LIVE MODE")
-    logger.info(f"   ⚠️  MODE: 💰 LIVE (صفقات حقيقية)")
-    logger.info(f"   🌐 IP: {ip}")
-    logger.info(f"   🤖 AI Weight: {CFG.ai_weight*100:.0f}% | Signal Weight: {CFG.signal_weight*100:.0f}%")
+    logger.info("AI TRADING BOT V8 — LIVE MODE")
+    logger.info(f"   MODE: LIVE")
+    logger.info(f"   IP: {ip}")
+    logger.info(f"   AI: {CFG.ai_model} (weight={CFG.ai_weight*100:.0f}%)")
+    logger.info(f"   Signal weight: {CFG.signal_weight*100:.0f}%")
     logger.info(f"   Min Final Score: {CFG.min_final_score}")
     logger.info(f"   Watchlist: {len(CFG.watchlist)} | Scanner: {CFG.scanner_interval}s -> Top {CFG.scanner_top_n}")
     logger.info(f"   Leverage: x{CFG.leverage} | Margin: {CFG.margin_usdt} USDT")
@@ -1053,8 +996,8 @@ def main():
 
     try:
         t=exchange_public.fetch_ticker("BTC/USDT:USDT")
-        logger.info(f"✅ Binance OK | BTC: {t['last']}")
-    except Exception as e: logger.critical(f"❌ Binance: {e}"); return
+        logger.info(f"Binance OK | BTC: {t['last']}")
+    except Exception as e: logger.critical(f"Binance: {e}"); return
 
     logger.info("Loading data...")
     for sk,sym in CFG.watchlist.items():
@@ -1066,7 +1009,7 @@ def main():
                 cm.load(sk,tf,data)
             except: pass
             time.sleep(0.2)
-    logger.info("✅ Data ready")
+    logger.info("Data ready")
 
     monitor=PositionMonitor(); monitor.start()
     scanner=MarketScanner(); scanner.start()
