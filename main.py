@@ -772,6 +772,14 @@ async def websocket_worker():
                     interval = kline["i"]
                     is_closed = kline["x"]
 
+                    # ✅ إضافة سجل تشخيصي عند إغلاق أي شمعة
+                    if is_closed:
+                        print(
+                            f"✅ CLOSED CANDLE: {symbol_key.upper()} | "
+                            f"{interval} | {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                            flush=True
+                        )
+
                     candle = [
                         kline["t"],
                         float(kline["o"]),
