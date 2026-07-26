@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
 """
 ============================================================
-  AI TRADING BOT V7 - Dynamic Scanner + Smart Scoring
-
-  Architecture:
-  ┌────────────────────────────────────────────────────────┐
-  │  MarketScanner (كل 5 دقائق)                           │
-  │    Phase 1: Quick Scan → Top 5                        │
-  │    Phase 2: Deep Analysis → Signal                    │
-  │         ↓                                             │
-  │  TrendEngine (Direction + Entry Quality)              │
-  │         ↓                                             │
-  │  SignalEngine (Score 0-10, Pullback-aware)            │
-  │         ↓                                             │
-  │  AIAnalyst (شرح فقط)                                  │
-  │         ↓                                             │
-  │  ExecutionEngine (Lock + SL Mandatory)                │
-  │         ↓                                             │
-  │  PositionMonitor (Real PnL + Order Status)            │
-  └────────────────────────────────────────────────────────┘
+  AI TRADING BOT V8 - Dynamic Scanner + Smart Scoring
+  V8 Fixes:
+    1. Conflict = CAUTION (not BLOCKED)
+    2. Pullback searches last 3 candles
+    3. RSI scored per direction (no overlap)
+    4. Score /12 (not /10)
+    5. actual_qty for SL/TP
+    6. Real PnL + contract size
+    7. Detailed trend logging
+    8. WEAK_BULLISH / WEAK_BEARISH states
 ============================================================
 """
 
@@ -70,17 +62,14 @@ logger = logging.getLogger("TradingBot")
 
 @dataclass
 class Config:
-    # --- Binance ---
     binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
     binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
 
-    # --- NVIDIA / DeepSeek ---
     nvidia_api_key: str = "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"
     ai_model: str = "deepseek-ai/deepseek-v4-pro"
     ai_temperature: float = 0.0
     ai_max_tokens: int = 400
 
-    # --- Trading ---
     dry_run: bool = True
     leverage: int = 10
     margin_usdt: float = 10.0
@@ -88,11 +77,9 @@ class Config:
     max_open_positions: int = 2
     cooldown_seconds: int = 180
 
-    # --- Risk ---
     max_sl_percent: float = 5.0
     max_tp_percent: float = 10.0
 
-    # --- V7: Scoring ---
     min_score_to_enter: int = 5
     rsi_extreme_overbought: float = 82.0
     rsi_extreme_oversold: float = 18.0
@@ -103,26 +90,21 @@ class Config:
     stoch_overbought: float = 80.0
     stoch_oversold: float = 20.0
 
-    # --- V7: Scanner ---
     scanner_interval: int = 300
     scanner_top_n: int = 5
     scanner_min_volume_usdt: float = 5_000_000
     scanner_min_atr_pct: float = 0.5
     scanner_max_spread_pct: float = 0.5
 
-    # --- Position Monitor ---
     monitor_interval: int = 15
 
-    # --- WebSocket ---
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
     ws_reconnect_delay: int = 10
     candle_maxlen: int = 500
 
-    # --- Server ---
     flask_port: int = 8080
 
-    # --- Watchlist ---
     watchlist: Dict[str, str] = field(default_factory=lambda: {
         "btcusdt":      "BTC/USDT:USDT",
         "ethusdt":      "ETH/USDT:USDT",
@@ -184,7 +166,6 @@ class EntryQuality(Enum):
 
 @dataclass
 class ScannerResult:
-    """نتيجة فحص عملة واحدة"""
     symbol_key: str = ""
     symbol: str = ""
     score: float = 0.0
@@ -201,7 +182,7 @@ class SignalResult:
     decision: Decision = Decision.WAIT
     buy_score: int = 0
     sell_score: int = 0
-    max_score: int = 10
+    max_score: int = 12
     is_pullback: bool = False
     signals: List[str] = field(default_factory=list)
     reasons: List[str] = field(default_factory=list)
@@ -360,7 +341,7 @@ db = TradeDB(CFG.db_path)
 
 app = Flask(__name__)
 bot_stats = {
-    "status": "STARTING", "version": "V7",
+    "status": "STARTING", "version": "V8",
     "uptime": 0, "trades_today": 0, "open_positions": 0,
     "scanner_candidates": [], "last_analysis": {},
     "errors": 0, "mode": "PAPER" if CFG.dry_run else "LIVE",
@@ -370,7 +351,7 @@ START_TIME = time.time()
 
 @app.route("/")
 def home():
-    return f"AI TRADING BOT V7 | {'PAPER' if CFG.dry_run else 'LIVE'}"
+    return f"AI TRADING BOT V8 | {'PAPER' if CFG.dry_run else 'LIVE'}"
 
 
 @app.route("/health")
@@ -404,7 +385,7 @@ ai_client = OpenAI(
 
 
 # ============================================================
-#  6. CANDLE MANAGER (Closed vs Forming)
+#  6. CANDLE MANAGER
 # ============================================================
 
 class CandleManager:
@@ -468,14 +449,12 @@ candle_mgr = CandleManager(CFG.candle_maxlen)
 
 trade_state: Dict[str, dict] = {}
 execution_lock = threading.Lock()
-
-# العملات النشطة حالياً (يحددها Scanner)
-active_symbols: Dict[str, str] = {}   # key → symbol
+active_symbols: Dict[str, str] = {}
 active_lock = threading.Lock()
 
 
 # ============================================================
-#  8. INDICATORS (نفس V6)
+#  8. INDICATORS
 # ============================================================
 
 def closes(data):  return [float(x[4]) for x in data]
@@ -580,7 +559,9 @@ def calc_adx(data, period=14) -> Optional[dict]:
         mdm_r.append(dn if (dn > up and dn > 0) else 0.0)
         tr_r.append(max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])))
     if len(tr_r) < period*2: return None
-    atr_s, pdm_s, mdm_s = sum(tr_r[:period]), sum(pdm_r[:period]), sum(mdm_r[:period])
+    atr_s = sum(tr_r[:period])
+    pdm_s = sum(pdm_r[:period])
+    mdm_s = sum(mdm_r[:period])
     pdi_s, mdi_s, dx_s = [], [], []
     for i in range(period, len(tr_r)):
         atr_s = atr_s - atr_s/period + tr_r[i]
@@ -588,7 +569,8 @@ def calc_adx(data, period=14) -> Optional[dict]:
         mdm_s = mdm_s - mdm_s/period + mdm_r[i]
         if atr_s == 0:
             pdi_s.append(0); mdi_s.append(0); dx_s.append(0); continue
-        pdi = pdm_s/atr_s*100; mdi = mdm_s/atr_s*100
+        pdi = pdm_s/atr_s*100
+        mdi = mdm_s/atr_s*100
         pdi_s.append(pdi); mdi_s.append(mdi)
         ds = pdi+mdi
         dx_s.append(abs(pdi-mdi)/ds*100 if ds else 0)
@@ -596,7 +578,8 @@ def calc_adx(data, period=14) -> Optional[dict]:
     adx = sum(dx_s[:period])/period
     for i in range(period, len(dx_s)):
         adx = ((adx*(period-1))+dx_s[i])/period
-    cpdi, cmdi = (pdi_s[-1] if pdi_s else 0), (mdi_s[-1] if mdi_s else 0)
+    cpdi = pdi_s[-1] if pdi_s else 0
+    cmdi = mdi_s[-1] if mdi_s else 0
     return {"adx": round(adx,2), "plus_di": round(cpdi,2),
             "minus_di": round(cmdi,2),
             "trend": "bullish" if cpdi > cmdi else ("bearish" if cmdi > cpdi else "neutral"),
@@ -679,19 +662,11 @@ def calculate_indicators(data) -> Optional[dict]:
 
 
 # ============================================================
-#  ✅ V7: PULLBACK DETECTION
+#  ✅ V8: PULLBACK (آخر 3 شموع)
 # ============================================================
 
 def detect_pullback(data, direction: str) -> dict:
-    """
-    يكشف هل السعر في pullback ضمن اتجاه:
-    - BULLISH pullback: السعر هبط لـ EMA21 أو EMA50 ثم ارتد
-    - BEARISH pullback: السعر صعد لـ EMA21 أو EMA50 ثم ارتد
-    
-    هذا أفضل من شراء القمة أو بيع القاع.
-    """
     result = {"is_pullback": False, "type": "", "quality": 0, "reason": ""}
-
     if len(data) < 55:
         return result
 
@@ -705,53 +680,50 @@ def detect_pullback(data, direction: str) -> dict:
     if not ema21 or not ema50:
         return result
 
-    atr = calc_atr(data)
-    if not atr:
-        return result
+    recent_low = min(l[-3:])
+    recent_high = max(h[-3:])
+    bounced_up = c[-1] > c[-2] and c[-1] > c[-3]
+    bounced_down = c[-1] < c[-2] and c[-1] < c[-3]
 
     if direction == "BULLISH":
-        # Pullback صاعد: السعر اقترب من EMA21/50 ثم ارتد
-        touch_ema21 = l[-1] <= ema21 * 1.005  # لمس EMA21 (تسامح 0.5%)
-        touch_ema50 = l[-1] <= ema50 * 1.005
-        bounced = c[-1] > c[-2]  # شمعة ارتداد
-        above_ema = price > ema21
+        touch_ema21 = recent_low <= ema21 * 1.008
+        touch_ema50 = recent_low <= ema50 * 1.008
 
-        if touch_ema21 and bounced and above_ema:
+        if touch_ema50 and bounced_up and price > ema50:
+            result = {"is_pullback": True, "type": "EMA50_BOUNCE",
+                      "quality": 3, "reason": "ارتداد من EMA50 (قوي)"}
+        elif touch_ema21 and bounced_up and price > ema21:
             result = {"is_pullback": True, "type": "EMA21_BOUNCE",
                       "quality": 2, "reason": "ارتداد من EMA21"}
-        elif touch_ema50 and bounced and price > ema50:
-            result = {"is_pullback": True, "type": "EMA50_BOUNCE",
-                      "quality": 3, "reason": "ارتداد من EMA50 (أقوى)"}
 
-        # Bollinger pullback
         bb = calc_bollinger(c)
-        if bb and l[-1] <= bb["lower"] * 1.002 and c[-1] > bb["lower"]:
-            result = {"is_pullback": True, "type": "BB_LOWER_BOUNCE",
-                      "quality": 2, "reason": "ارتداد من Bollinger السفلي"}
+        if bb and recent_low <= bb["lower"] * 1.005 and c[-1] > bb["lower"]:
+            if not result["is_pullback"]:
+                result = {"is_pullback": True, "type": "BB_LOWER_BOUNCE",
+                          "quality": 2, "reason": "ارتداد من Bollinger السفلي"}
 
     elif direction == "BEARISH":
-        touch_ema21 = h[-1] >= ema21 * 0.995
-        touch_ema50 = h[-1] >= ema50 * 0.995
-        bounced = c[-1] < c[-2]
-        below_ema = price < ema21
+        touch_ema21 = recent_high >= ema21 * 0.992
+        touch_ema50 = recent_high >= ema50 * 0.992
 
-        if touch_ema21 and bounced and below_ema:
+        if touch_ema50 and bounced_down and price < ema50:
+            result = {"is_pullback": True, "type": "EMA50_REJECT",
+                      "quality": 3, "reason": "رفض من EMA50 (قوي)"}
+        elif touch_ema21 and bounced_down and price < ema21:
             result = {"is_pullback": True, "type": "EMA21_REJECT",
                       "quality": 2, "reason": "رفض من EMA21"}
-        elif touch_ema50 and bounced and price < ema50:
-            result = {"is_pullback": True, "type": "EMA50_REJECT",
-                      "quality": 3, "reason": "رفض من EMA50 (أقوى)"}
 
         bb = calc_bollinger(c)
-        if bb and h[-1] >= bb["upper"] * 0.998 and c[-1] < bb["upper"]:
-            result = {"is_pullback": True, "type": "BB_UPPER_REJECT",
-                      "quality": 2, "reason": "رفض من Bollinger العلوي"}
+        if bb and recent_high >= bb["upper"] * 0.995 and c[-1] < bb["upper"]:
+            if not result["is_pullback"]:
+                result = {"is_pullback": True, "type": "BB_UPPER_REJECT",
+                          "quality": 2, "reason": "رفض من Bollinger العلوي"}
 
     return result
 
 
 # ============================================================
-#  ✅ V7: TREND ENGINE (مخفف)
+#  ✅ V8: TREND ENGINE (Conflict=CAUTION, WEAK states)
 # ============================================================
 
 def confirm_trend(i1m, i1h, i1d) -> TrendConfirmation:
@@ -763,6 +735,7 @@ def confirm_trend(i1m, i1h, i1d) -> TrendConfirmation:
     if i1d:
         ec = i1d.get("ema_cross")
         adx = i1d.get("adx")
+
         if ec:
             if ec["alignment"] == "BULLISH_ALIGNMENT":
                 result.daily_trend = "BULLISH"; score += 2
@@ -774,13 +747,27 @@ def confirm_trend(i1m, i1h, i1d) -> TrendConfirmation:
                 score += 1; reasons.append("1D: Golden Cross!")
             elif ec["cross"] == "DEATH_CROSS":
                 score -= 1; reasons.append("1D: Death Cross!")
-        if adx and adx["weak"]:
-            # ✅ V7: لا نضرب في 0.5، فقط نضع علامة
-            reasons.append(f"1D: ADX ضعيف ({adx['adx']})")
+        else:
+            e50 = i1d.get("ema50")
+            price = i1d.get("price", 0)
+            if e50 and price:
+                if price > e50:
+                    result.daily_trend = "BULLISH"; score += 1
+                    reasons.append("1D: Price>EMA50")
+                else:
+                    result.daily_trend = "BEARISH"; score -= 1
+                    reasons.append("1D: Price<EMA50")
+
+        if adx:
+            if adx["weak"]:
+                reasons.append(f"1D: ADX ضعيف ({adx['adx']})")
+            elif adx["strong"]:
+                reasons.append(f"1D: ADX قوي ({adx['adx']})")
 
     # ═══ 1H ═══
     if i1h:
-        e21, e50 = i1h.get("ema21"), i1h.get("ema50")
+        e21 = i1h.get("ema21")
+        e50 = i1h.get("ema50")
         price = i1h.get("price", 0)
         adx = i1h.get("adx")
 
@@ -791,126 +778,137 @@ def confirm_trend(i1m, i1h, i1d) -> TrendConfirmation:
             elif e21 < e50 and price < e21:
                 result.hourly_trend = "BEARISH"; score -= 2
                 reasons.append("1H: P<EMA21<EMA50")
+            elif price > e21:
+                result.hourly_trend = "WEAK_BULLISH"; score += 1
+                reasons.append("1H: P>EMA21 (ضعيف)")
+            elif price < e21:
+                result.hourly_trend = "WEAK_BEARISH"; score -= 1
+                reasons.append("1H: P<EMA21 (ضعيف)")
             else:
                 result.hourly_trend = "MIXED"
-                reasons.append("1H: EMA مختلط")
+                reasons.append("1H: مختلط")
 
         if adx:
-            # ✅ V7: ADX >= 18 بدلاً من 20
             if adx["adx"] >= CFG.adx_threshold:
-                if adx["trend"] == "bullish": score += 1
-                elif adx["trend"] == "bearish": score -= 1
-                reasons.append(f"1H: ADX={adx['adx']}")
+                if adx["trend"] == "bullish":
+                    score += 1; reasons.append(f"1H: +DI>-DI (ADX={adx['adx']})")
+                elif adx["trend"] == "bearish":
+                    score -= 1; reasons.append(f"1H: -DI>+DI (ADX={adx['adx']})")
             else:
-                reasons.append(f"1H: ADX منخفض ({adx['adx']})")
+                reasons.append(f"1H: ADX={adx['adx']} (منخفض)")
 
     # ═══ 1M ═══
     if i1m:
         rsi = i1m.get("rsi")
         stoch = i1m.get("stochastic")
         if rsi is not None:
-            if rsi < 30: result.minute_timing = "OVERSOLD"
-            elif rsi > 70: result.minute_timing = "OVERBOUGHT"
-            else: result.minute_timing = "NEUTRAL"
+            if rsi < 30:
+                result.minute_timing = "OVERSOLD"
+                reasons.append(f"1M: RSI={rsi:.0f} تشبع بيعي")
+            elif rsi > 70:
+                result.minute_timing = "OVERBOUGHT"
+                reasons.append(f"1M: RSI={rsi:.0f} تشبع شرائي")
+            else:
+                result.minute_timing = "NEUTRAL"
         if stoch:
             if stoch["k"] < 20 and stoch["k"] > stoch["d"]:
                 reasons.append("1M: Stoch تقاطع صاعد")
             elif stoch["k"] > 80 and stoch["k"] < stoch["d"]:
                 reasons.append("1M: Stoch تقاطع هابط")
 
-    # ═══ Direction ═══
     result.reasons = reasons
 
-    if (result.daily_trend == "BULLISH" and result.hourly_trend == "BEARISH") or \
-       (result.daily_trend == "BEARISH" and result.hourly_trend == "BULLISH"):
-        result.direction = TrendDirection.CONFLICT
-        result.entry_quality = EntryQuality.BLOCKED
-        reasons.append("🚫 تعارض 1D/1H")
-        return result
+    # ═══ ✅ V8: Direction ═══
+    daily_bull = result.daily_trend == "BULLISH"
+    daily_bear = result.daily_trend == "BEARISH"
+    hourly_bull = result.hourly_trend in ("BULLISH", "WEAK_BULLISH")
+    hourly_bear = result.hourly_trend in ("BEARISH", "WEAK_BEARISH")
 
-    if score >= 3:
+    if daily_bull and hourly_bear:
+        result.direction = TrendDirection.NEUTRAL
+        result.entry_quality = EntryQuality.CAUTION
+        result.strength = 20
+        reasons.append("⚠️ 1D صاعد + 1H هابط → Pullback محتمل")
+    elif daily_bear and hourly_bull:
+        result.direction = TrendDirection.NEUTRAL
+        result.entry_quality = EntryQuality.CAUTION
+        result.strength = 20
+        reasons.append("⚠️ 1D هابط + 1H صاعد → ارتداد محتمل")
+    elif score >= 3:
         result.direction = TrendDirection.BULLISH
         result.strength = min(score * 15, 100)
     elif score <= -3:
         result.direction = TrendDirection.BEARISH
         result.strength = min(abs(score) * 15, 100)
+    elif score >= 1:
+        result.direction = TrendDirection.BULLISH
+        result.strength = score * 10
+        result.entry_quality = EntryQuality.CAUTION
+        reasons.append("⚠️ اتجاه صاعد ضعيف")
+    elif score <= -1:
+        result.direction = TrendDirection.BEARISH
+        result.strength = abs(score) * 10
+        result.entry_quality = EntryQuality.CAUTION
+        reasons.append("⚠️ اتجاه هابط ضعيف")
     else:
         result.direction = TrendDirection.NEUTRAL
-        result.strength = abs(score) * 10
-
-    # ═══ Entry Quality (✅ V7: أكثر تسامحاً) ═══
-    if result.direction in (TrendDirection.BULLISH, TrendDirection.BEARISH):
-        adx_1d_weak = i1d and i1d.get("adx", {}).get("weak", False)
-        adx_1h_weak = i1h and i1h.get("adx", {}).get("weak", False)
-
-        if adx_1d_weak and adx_1h_weak:
-            result.entry_quality = EntryQuality.CAUTION  # ✅ كان BLOCKED
-            reasons.append("⚠️ ADX ضعيف على الكل - دخول بحذر")
-        else:
-            result.entry_quality = EntryQuality.ALLOWED
-    else:
+        result.strength = 0
         result.entry_quality = EntryQuality.BLOCKED
+        reasons.append("⛔ لا اتجاه")
+
+    # ═══ Entry Quality ═══
+    if result.direction in (TrendDirection.BULLISH, TrendDirection.BEARISH):
+        if result.entry_quality != EntryQuality.CAUTION:
+            adx_1d_weak = i1d and i1d.get("adx", {}).get("weak", False)
+            adx_1h_weak = i1h and i1h.get("adx", {}).get("weak", False)
+            if adx_1d_weak and adx_1h_weak:
+                result.entry_quality = EntryQuality.CAUTION
+                reasons.append("⚠️ ADX ضعيف على الكل")
+            else:
+                result.entry_quality = EntryQuality.ALLOWED
 
     return result
 
 
 # ============================================================
-#  ✅ V7: SIGNAL ENGINE (Score مخفف + Pullback)
+#  ✅ V8: SIGNAL ENGINE (Score /12, RSI per direction)
 # ============================================================
 
 class SignalEngine:
-    """
-    V7 Scoring:
-    ┌──────────────────────────────────────────────────────┐
-    │ +2  Trend Direction متوافق                          │
-    │ +2  ADX 1H >= 18                                    │
-    │ +1  MACD متوافق                                     │
-    │ +1  Volume Ratio > 1.2                              │
-    │ +1  RSI في المنطقة الجيدة (40-68 شراء / 32-60 بيع) │
-    │ +1  Price فوق/تحت EMA21                             │
-    │ +1  Stochastic K > D (شراء) / K < D (بيع)          │
-    │ +1  EMA Alignment أو Cross جديد                    │
-    │ +2  Pullback مؤكد (بدل مطاردة القمة)               │
-    │ ──────────────────────────────────────────────────── │
-    │ = 12 أقصى (نطبعه كـ /10)                           │
-    │                                                      │
-    │ ✅ V7 Filters (مخففة):                              │
-    │ - RSI > 82 = منع (ليس 75)                          │
-    │ - RSI 75-82 = تحذير (-1 فقط)                       │
-    │ - Stoch > 80 + K < D = تحذير (ليس منع)             │
-    │ - Stoch > 80 + K > D = زخم (لا تحذير)              │
-    │ - ADX < 18 = لا نقاط ADX (ليس منع)                │
-    └──────────────────────────────────────────────────────┘
-    """
+    MAX_SCORE = 12
 
     def evaluate(self, symbol, trend, i1m, i1h, i1d,
                  data_1h=None) -> SignalResult:
-
         r = SignalResult()
+        r.max_score = self.MAX_SCORE
         buy_s, sell_s = 0, 0
         sigs, reasons = [], []
 
-        # ─── Blockers ───
         if trend.entry_quality == EntryQuality.BLOCKED:
             r.decision = Decision.WAIT
             r.reasons = ["Entry BLOCKED"] + trend.reasons
             return r
-        if trend.direction == TrendDirection.CONFLICT:
-            r.decision = Decision.WAIT
-            r.reasons = ["تعارض"] + trend.reasons
-            return r
-        if trend.direction == TrendDirection.NEUTRAL:
-            r.decision = Decision.WAIT
-            r.reasons = ["محايد"] + trend.reasons
-            return r
 
-        # ─── 1. Trend (+2) ───
+        if trend.direction == TrendDirection.NEUTRAL:
+            if trend.entry_quality == EntryQuality.CAUTION:
+                reasons.append("⚠️ محايد/متعارض - دخول بحذر")
+            else:
+                r.decision = Decision.WAIT
+                r.reasons = ["محايد"] + trend.reasons
+                return r
+
+        # 1. Trend (+2)
         if trend.direction == TrendDirection.BULLISH:
             buy_s += 2; sigs.append("TREND_BULL")
         elif trend.direction == TrendDirection.BEARISH:
             sell_s += 2; sigs.append("TREND_BEAR")
+        elif trend.direction == TrendDirection.NEUTRAL:
+            if trend.hourly_trend in ("BULLISH", "WEAK_BULLISH"):
+                buy_s += 1; sigs.append("TREND_WEAK_BULL")
+            elif trend.hourly_trend in ("BEARISH", "WEAK_BEARISH"):
+                sell_s += 1; sigs.append("TREND_WEAK_BEAR")
 
-        # ─── 2. ADX (+2) ───
+        # 2. ADX (+2)
         if i1h and i1h.get("adx"):
             adx = i1h["adx"]
             if adx["adx"] >= CFG.adx_threshold:
@@ -919,39 +917,44 @@ class SignalEngine:
                 elif adx["trend"] == "bearish":
                     sell_s += 2; sigs.append(f"ADX_{adx['adx']}")
 
-        # ─── 3. MACD (+1) ───
+        # 3. MACD (+1)
         if i1h and i1h.get("macd"):
             if i1h["macd"]["trend"] == "bullish":
                 buy_s += 1; sigs.append("MACD_BULL")
             elif i1h["macd"]["trend"] == "bearish":
                 sell_s += 1; sigs.append("MACD_BEAR")
 
-        # ─── 4. Volume (+1) ───
+        # 4. Volume (+1)
         if i1h and i1h.get("volume_ratio"):
             vr = i1h["volume_ratio"]
             if vr and vr > 1.2:
-                if trend.direction == TrendDirection.BULLISH:
+                if trend.direction == TrendDirection.BULLISH or \
+                   trend.hourly_trend in ("BULLISH", "WEAK_BULLISH"):
                     buy_s += 1; sigs.append(f"VOL_{vr}")
-                elif trend.direction == TrendDirection.BEARISH:
+                elif trend.direction == TrendDirection.BEARISH or \
+                     trend.hourly_trend in ("BEARISH", "WEAK_BEARISH"):
                     sell_s += 1; sigs.append(f"VOL_{vr}")
 
-        # ─── 5. RSI Zone (+1) ───
+        # 5. RSI (per direction, no overlap)
         if i1h and i1h.get("rsi") is not None:
             rsi = i1h["rsi"]
-            if 40 <= rsi <= 68:
-                buy_s += 1; sigs.append(f"RSI_OK_{rsi:.0f}")
-            elif 32 <= rsi <= 60:
-                sell_s += 1; sigs.append(f"RSI_OK_S_{rsi:.0f}")
+            is_bull = trend.direction == TrendDirection.BULLISH or \
+                      trend.hourly_trend in ("BULLISH", "WEAK_BULLISH")
+            is_bear = trend.direction == TrendDirection.BEARISH or \
+                      trend.hourly_trend in ("BEARISH", "WEAK_BEARISH")
+            if is_bull and 40 <= rsi <= 68:
+                buy_s += 1; sigs.append(f"RSI_BUY_{rsi:.0f}")
+            elif is_bear and 32 <= rsi <= 60:
+                sell_s += 1; sigs.append(f"RSI_SELL_{rsi:.0f}")
 
-        # ─── 6. Price vs EMA21 (+1) ───
+        # 6. Price vs EMA21 (+1)
         if i1h:
             p, e21 = i1h.get("price", 0), i1h.get("ema21")
             if e21 and p:
                 if p > e21: buy_s += 1; sigs.append("P>EMA21")
                 elif p < e21: sell_s += 1; sigs.append("P<EMA21")
 
-        # ─── 7. Stochastic (+1) ───
-        # ✅ V7: K > D = زخم (ليس overbought = منع)
+        # 7. Stochastic K vs D (+1)
         if i1h and i1h.get("stochastic"):
             st = i1h["stochastic"]
             if st["k"] > st["d"]:
@@ -959,7 +962,7 @@ class SignalEngine:
             elif st["k"] < st["d"]:
                 sell_s += 1; sigs.append("STOCH_K<D")
 
-        # ─── 8. EMA Cross/Alignment (+1) ───
+        # 8. EMA Cross/Alignment (+1)
         if i1h and i1h.get("ema_cross"):
             ec = i1h["ema_cross"]
             if ec["is_fresh_cross"]:
@@ -972,88 +975,83 @@ class SignalEngine:
             elif ec["alignment"] == "BEARISH_ALIGNMENT":
                 sell_s += 1
 
-        # ─── 9. ✅ V7: Pullback (+2) ───
+        # 9. Pullback (+2)
         if data_1h and len(data_1h) >= 55:
-            pb = detect_pullback(data_1h, trend.direction.value)
+            dir_pb = trend.direction.value
+            if dir_pb == "NEUTRAL":
+                if trend.hourly_trend in ("BULLISH", "WEAK_BULLISH"):
+                    dir_pb = "BULLISH"
+                elif trend.hourly_trend in ("BEARISH", "WEAK_BEARISH"):
+                    dir_pb = "BEARISH"
+            pb = detect_pullback(data_1h, dir_pb)
             if pb["is_pullback"]:
                 r.is_pullback = True
-                if trend.direction == TrendDirection.BULLISH:
-                    buy_s += 2; sigs.append(f"PULLBACK_{pb['type']}")
+                if dir_pb == "BULLISH":
+                    buy_s += 2; sigs.append(f"PB_{pb['type']}")
                     reasons.append(f"✅ {pb['reason']}")
-                elif trend.direction == TrendDirection.BEARISH:
-                    sell_s += 2; sigs.append(f"PULLBACK_{pb['type']}")
+                elif dir_pb == "BEARISH":
+                    sell_s += 2; sigs.append(f"PB_{pb['type']}")
                     reasons.append(f"✅ {pb['reason']}")
 
-        # ═══ ✅ V7: Filters (مخففة) ═══
+        # ═══ Filters ═══
         if i1h and i1h.get("rsi") is not None:
             rsi = i1h["rsi"]
             stoch_k = i1h.get("stochastic", {}).get("k", 50) if i1h.get("stochastic") else 50
             adx_v = i1h.get("adx", {}).get("adx", 0) if i1h.get("adx") else 0
 
-            # RSI > 82 = منع حقيقي
             if rsi >= CFG.rsi_extreme_overbought:
                 buy_s = max(0, buy_s - 4)
-                reasons.append(f"🚫 RSI={rsi:.1f} ≥ {CFG.rsi_extreme_overbought} → منع BUY")
-
-            # RSI 75-82 = تحذير فقط (-1)
+                reasons.append(f"🚫 RSI={rsi:.1f} >= {CFG.rsi_extreme_overbought}")
             elif rsi >= CFG.rsi_caution_overbought:
-                # ✅ V7: إذا ADX قوي + Stoch K > D → لا نخصم (زخم حقيقي)
                 if adx_v >= CFG.adx_strong and stoch_k > 50:
-                    reasons.append(f"⚠️ RSI={rsi:.1f} مرتفع لكن زخم قوي - لا خصم")
+                    reasons.append(f"⚠️ RSI={rsi:.1f} لكن زخم قوي")
                 else:
                     buy_s = max(0, buy_s - 1)
-                    reasons.append(f"⚠️ RSI={rsi:.1f} → خصم 1")
+                    reasons.append(f"⚠️ RSI={rsi:.1f} -> -1")
 
-            # RSI < 18 = منع
             if rsi <= CFG.rsi_extreme_oversold:
                 sell_s = max(0, sell_s - 4)
-                reasons.append(f"🚫 RSI={rsi:.1f} ≤ {CFG.rsi_extreme_oversold} → منع SELL")
-
+                reasons.append(f"🚫 RSI={rsi:.1f} <= {CFG.rsi_extreme_oversold}")
             elif rsi <= CFG.rsi_caution_oversold:
                 if adx_v >= CFG.adx_strong and stoch_k < 50:
-                    reasons.append(f"⚠️ RSI={rsi:.1f} منخفض لكن زخم هابط قوي")
+                    reasons.append(f"⚠️ RSI={rsi:.1f} لكن زخم هابط")
                 else:
                     sell_s = max(0, sell_s - 1)
-                    reasons.append(f"⚠️ RSI={rsi:.1f} → خصم 1")
+                    reasons.append(f"⚠️ RSI={rsi:.1f} -> -1")
 
-        # ✅ V7: Stoch > 80 ليس منعاً
         if i1h and i1h.get("stochastic"):
             st = i1h["stochastic"]
-            if st["k"] > CFG.stoch_overbought:
-                if st["k"] < st["d"]:
-                    # K يهبط تحت D = احتمال تصحيح
-                    buy_s = max(0, buy_s - 1)
-                    reasons.append(f"⚠️ Stoch K<D عند {st['k']:.0f} → خصم 1")
-                else:
-                    # K > D = زخم مستمر، لا خصم
-                    reasons.append(f"ℹ️ Stoch={st['k']:.0f} لكن K>D → زخم")
-            elif st["k"] < CFG.stoch_oversold:
-                if st["k"] > st["d"]:
-                    sell_s = max(0, sell_s - 1)
-                    reasons.append(f"⚠️ Stoch K>D عند {st['k']:.0f} → خصم 1")
-                else:
-                    reasons.append(f"ℹ️ Stoch={st['k']:.0f} لكن K<D → زخم هابط")
+            if st["k"] > CFG.stoch_overbought and st["k"] < st["d"]:
+                buy_s = max(0, buy_s - 1)
+                reasons.append(f"⚠️ Stoch K<D عند {st['k']:.0f}")
 
-        # ═══ القرار ═══
-        r.buy_score = min(buy_s, 10)
-        r.sell_score = min(sell_s, 10)
+        # ═══ Decision ═══
+        r.buy_score = min(buy_s, self.MAX_SCORE)
+        r.sell_score = min(sell_s, self.MAX_SCORE)
         r.signals = sigs
         r.reasons = reasons + trend.reasons
 
-        if trend.direction == TrendDirection.BULLISH:
+        is_bull_entry = trend.direction == TrendDirection.BULLISH or \
+            (trend.direction == TrendDirection.NEUTRAL and
+             trend.hourly_trend in ("BULLISH", "WEAK_BULLISH"))
+        is_bear_entry = trend.direction == TrendDirection.BEARISH or \
+            (trend.direction == TrendDirection.NEUTRAL and
+             trend.hourly_trend in ("BEARISH", "WEAK_BEARISH"))
+
+        if is_bull_entry:
             if buy_s >= CFG.min_score_to_enter:
                 r.decision = Decision.BUY
                 self._set_sl_tp(r, i1h)
             else:
                 r.decision = Decision.WAIT
-                reasons.append(f"BUY={buy_s}/{CFG.min_score_to_enter} غير كافٍ")
-        elif trend.direction == TrendDirection.BEARISH:
+                reasons.append(f"BUY={buy_s}/{CFG.min_score_to_enter} غير كاف")
+        elif is_bear_entry:
             if sell_s >= CFG.min_score_to_enter:
                 r.decision = Decision.SELL
                 self._set_sl_tp(r, i1h)
             else:
                 r.decision = Decision.WAIT
-                reasons.append(f"SELL={sell_s}/{CFG.min_score_to_enter} غير كافٍ")
+                reasons.append(f"SELL={sell_s}/{CFG.min_score_to_enter} غير كاف")
         else:
             r.decision = Decision.WAIT
 
@@ -1073,7 +1071,7 @@ signal_engine = SignalEngine()
 
 
 # ============================================================
-#  AI ANALYST (شرح فقط)
+#  AI ANALYST
 # ============================================================
 
 class AIAnalyst:
@@ -1086,7 +1084,7 @@ class AIAnalyst:
         prompt = f"""أنت محلل أسواق. اشرح فقط. لا تعطي قرار تداول.
 
 العملة: {symbol}
-القرار: {signal.decision.value} (Score: B={signal.buy_score} S={signal.sell_score}/10)
+القرار: {signal.decision.value} (Score: B={signal.buy_score} S={signal.sell_score}/{signal.max_score})
 الاتجاه: {trend.direction.value} | Pullback: {signal.is_pullback}
 RSI 1H: {i1h.get('rsi') if i1h else 'N/A'}
 ADX 1H: {i1h.get('adx') if i1h else 'N/A'}
@@ -1123,21 +1121,10 @@ ai_analyst = AIAnalyst()
 
 
 # ============================================================
-#  ✅ V7: MARKET SCANNER (ديناميكي)
+#  ✅ V8: MARKET SCANNER (مع Log تفصيلي)
 # ============================================================
 
 class MarketScanner:
-    """
-    Phase 1: Quick Scan (كل 5 دقائق)
-      - يفحص كل العملات في watchlist
-      - يفلتر: حجم، حركة، اتجاه
-      - يختار Top N
-
-    Phase 2: Deep Analysis
-      - فقط للمرشحين
-      - 1D + 1H + 1M + AI
-    """
-
     def __init__(self):
         self._running = True
         self._thread = None
@@ -1145,13 +1132,12 @@ class MarketScanner:
     def start(self):
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        logger.info("🔍 Market Scanner مُفعّل")
+        logger.info("🔍 Market Scanner V8")
 
     def stop(self):
         self._running = False
 
     def _loop(self):
-        # أول فحص فوري
         time.sleep(5)
         while self._running:
             try:
@@ -1163,7 +1149,6 @@ class MarketScanner:
     def _scan_cycle(self):
         logger.info("=" * 60)
         logger.info("🔍 بدء فحص السوق...")
-
         candidates = []
 
         for sk, sym in CFG.watchlist.items():
@@ -1173,41 +1158,33 @@ class MarketScanner:
                     candidates.append(result)
             except Exception as e:
                 logger.debug(f"Scan skip {sym}: {e}")
-            time.sleep(0.3)  # rate limit
+            time.sleep(0.3)
 
-        # ترتيب حسب Score
         candidates.sort(key=lambda x: x.score, reverse=True)
-
-        # Top N
         top = candidates[:CFG.scanner_top_n]
 
-        logger.info(f"📊 فحص {len(CFG.watchlist)} عملة → {len(candidates)} مرشح → Top {len(top)}")
+        logger.info(f"📊 فحص {len(CFG.watchlist)} عملة -> {len(candidates)} مرشح -> Top {len(top)}")
         for i, c in enumerate(top):
             logger.info(f"  #{i+1} {c.symbol} | Score={c.score:.1f} | "
                         f"Vol={c.volume_usdt/1e6:.1f}M | "
                         f"ATR={c.atr_pct:.2f}% | {c.trend_1h} | "
                         f"RSI={c.rsi_1h:.1f}")
 
-        # تحديث bot_stats
         bot_stats["scanner_candidates"] = [
             {"symbol": c.symbol, "score": c.score, "reasons": c.reasons[:3]}
             for c in top
         ]
 
-        # ✅ تحديث العملات النشطة
         with active_lock:
             active_symbols.clear()
             for c in top:
                 active_symbols[c.symbol_key] = c.symbol
                 candle_mgr.ensure_symbol(c.symbol_key, CFG.timeframes)
 
-        # Phase 2: تحليل عميق للمرشحين
         for c in top:
-            # لا نحلل إذا كان هناك مركز مفتوح
             pos = get_current_position(c.symbol)
             if pos == "ERROR" or pos:
                 continue
-
             threading.Thread(
                 target=self._deep_analysis,
                 args=(c.symbol_key, c.symbol),
@@ -1216,22 +1193,19 @@ class MarketScanner:
             time.sleep(1)
 
     def _quick_scan(self, sk: str, sym: str) -> Optional[ScannerResult]:
-        """فحص سريع: حجم + حركة + اتجاه"""
         result = ScannerResult(symbol_key=sk, symbol=sym)
         reasons = []
 
-        # 1. حجم التداول
         try:
             ticker = exchange.fetch_ticker(sym)
             vol_usdt = float(ticker.get("quoteVolume", 0) or 0)
             result.volume_usdt = vol_usdt
             if vol_usdt < CFG.scanner_min_volume_usdt:
-                return None  # حجم منخفض جداً
+                return None
             reasons.append(f"Vol={vol_usdt/1e6:.1f}M")
         except Exception:
             return None
 
-        # 2. ATR (حركة)
         try:
             ohlcv = exchange.fetch_ohlcv(sym, "1h", limit=50)
             if len(ohlcv) < 20:
@@ -1242,72 +1216,58 @@ class MarketScanner:
                 atr_pct = (atr / price) * 100
                 result.atr_pct = atr_pct
                 if atr_pct < CFG.scanner_min_atr_pct:
-                    return None  # حركة منخفضة
+                    return None
                 reasons.append(f"ATR={atr_pct:.2f}%")
         except Exception:
             return None
 
-        # 3. اتجاه 1H
         try:
             c = closes(ohlcv)
             e21 = ema(c, 21)
             e50 = ema(c, 50)
             if e21 and e50:
                 if e21 > e50 and price > e21:
-                    result.trend_1h = "BULLISH"
-                    result.score += 3
+                    result.trend_1h = "BULLISH"; result.score += 3
                     reasons.append("1H BULL")
                 elif e21 < e50 and price < e21:
-                    result.trend_1h = "BEARISH"
-                    result.score += 3
+                    result.trend_1h = "BEARISH"; result.score += 3
                     reasons.append("1H BEAR")
                 else:
-                    result.trend_1h = "MIXED"
-                    result.score += 1
+                    result.trend_1h = "MIXED"; result.score += 1
         except Exception:
             pass
 
-        # 4. RSI
         try:
             rsi = calc_rsi(c)
             if rsi is not None:
                 result.rsi_1h = rsi
-                # ✅ V7: RSI 75-82 ليس سبباً للاستبعاد
                 if rsi > CFG.rsi_extreme_overbought or rsi < CFG.rsi_extreme_oversold:
-                    return None  # تشبع شديد جداً فقط
+                    return None
                 elif 40 <= rsi <= 68:
-                    result.score += 2
-                    reasons.append(f"RSI={rsi:.0f} جيد")
+                    result.score += 2; reasons.append(f"RSI={rsi:.0f} جيد")
                 elif rsi > CFG.rsi_caution_overbought:
-                    result.score += 1
-                    reasons.append(f"RSI={rsi:.0f} مرتفع")
+                    result.score += 1; reasons.append(f"RSI={rsi:.0f} مرتفع")
         except Exception:
             pass
 
-        # 5. تغير آخر ساعة
         try:
             if len(ohlcv) >= 2:
                 chg = ((price - float(ohlcv[-2][4])) / float(ohlcv[-2][4])) * 100
                 result.change_1h_pct = chg
                 if abs(chg) > 0.3:
-                    result.score += 1
-                    reasons.append(f"1H Δ={chg:.2f}%")
+                    result.score += 1; reasons.append(f"1H d={chg:.2f}%")
         except Exception:
             pass
 
-        # 6. حجم إضافي
         if result.volume_usdt > 50_000_000:
-            result.score += 1
-            reasons.append("High Vol")
+            result.score += 1; reasons.append("High Vol")
 
         result.reasons = reasons
         return result
 
     def _deep_analysis(self, sk: str, sym: str):
-        """تحليل عميق لعملة مرشحة"""
         logger.info(f"🔬 تحليل عميق: {sym}")
 
-        # تحميل شموع إذا لم تكن موجودة
         if candle_mgr.get_closed_count(sk, "1h") < 50:
             self._load_candles(sk, sym)
 
@@ -1316,43 +1276,62 @@ class MarketScanner:
         d1d = candle_mgr.get_closed(sk, "1d")
 
         if len(d1h) < 50 or len(d1d) < 50:
-            logger.info(f"⏳ بيانات غير كافية: {sym}")
+            logger.info(f"⏳ بيانات غير كافية: {sym} (1H={len(d1h)}, 1D={len(d1d)})")
             return
 
         i1m = calculate_indicators(d1m) if len(d1m) >= 50 else None
         i1h = calculate_indicators(d1h)
         i1d = calculate_indicators(d1d)
         if not i1h or not i1d:
+            logger.info(f"⏳ مؤشرات غير كافية: {sym}")
             return
 
         trend = confirm_trend(i1m, i1h, i1d)
+
+        # ✅ V8: Log تفصيلي
+        logger.info(
+            f"🔎 {sym} | "
+            f"1D={trend.daily_trend} | "
+            f"1H={trend.hourly_trend} | "
+            f"1M={trend.minute_timing} | "
+            f"DIR={trend.direction.value} | "
+            f"QUALITY={trend.entry_quality.value} | "
+            f"STR={trend.strength}%"
+        )
+        for reason in trend.reasons:
+            logger.info(f"   - {reason}")
+
         signal = signal_engine.evaluate(sym, trend, i1m, i1h, i1d, d1h)
 
-        logger.info(f"📊 {sym}: {signal.decision.value} | "
-                    f"B={signal.buy_score} S={signal.sell_score}/10 | "
-                    f"PB={signal.is_pullback}")
+        logger.info(
+            f"📊 {sym}: {signal.decision.value} | "
+            f"B={signal.buy_score} S={signal.sell_score}/{signal.max_score} | "
+            f"PB={signal.is_pullback} | "
+            f"Signals={signal.signals}"
+        )
 
         if signal.decision == Decision.WAIT:
             bot_stats["last_analysis"][sym] = {
-                "decision": "WAIT", "scores": f"B:{signal.buy_score}/S:{signal.sell_score}",
+                "decision": "WAIT",
+                "scores": f"B:{signal.buy_score}/S:{signal.sell_score}/{signal.max_score}",
+                "trend": trend.direction.value,
+                "quality": trend.entry_quality.value,
                 "time": datetime.now(timezone.utc).isoformat(),
             }
             return
 
-        # AI (شرح)
         ai = ai_analyst.analyze(sym, signal, trend, i1h, i1d)
 
         if not ai.agreement:
             logger.warning(f"⚠️ AI لا يتفق - تخفيض {sym}")
             return
 
-        # تنفيذ
         if signal.decision in (Decision.BUY, Decision.SELL):
             execute_trade(sym, signal, ai)
 
         bot_stats["last_analysis"][sym] = {
             "decision": signal.decision.value,
-            "scores": f"B:{signal.buy_score}/S:{signal.sell_score}",
+            "scores": f"B:{signal.buy_score}/S:{signal.sell_score}/{signal.max_score}",
             "pullback": signal.is_pullback,
             "ai": ai.regime,
             "time": datetime.now(timezone.utc).isoformat(),
@@ -1370,7 +1349,7 @@ class MarketScanner:
 
 
 # ============================================================
-#  EXECUTION (نفس V6: Lock + SL Mandatory)
+#  ✅ V8: EXECUTION (actual_qty + SL mandatory)
 # ============================================================
 
 def get_current_position(symbol):
@@ -1425,20 +1404,22 @@ def execute_trade(symbol, signal: SignalResult, ai: AIAnalysis):
 
             ticker = exchange.fetch_ticker(symbol)
             price = ticker["last"]
-            qty = float(exchange.amount_to_precision(
-                symbol, (CFG.margin_usdt * CFG.leverage) / price))
+            raw_qty = (CFG.margin_usdt * CFG.leverage) / price
+            qty = float(exchange.amount_to_precision(symbol, raw_qty))
             side = "buy" if signal.decision == Decision.BUY else "sell"
             pname = "LONG" if side == "buy" else "SHORT"
             mode = "PAPER" if CFG.dry_run else "LIVE"
 
             logger.info(f"🚀 {symbol} | {pname} | {price} | {mode} | "
-                        f"PB={signal.is_pullback}")
+                        f"PB={signal.is_pullback} | "
+                        f"Score={signal.buy_score}/{signal.sell_score}/{signal.max_score}")
 
             if CFG.dry_run:
                 db.insert_trade(TradeRecord(
                     symbol=symbol, side=pname, entry_price=price,
-                    quantity=qty, confidence=max(signal.buy_score, signal.sell_score),
-                    reason=f"Score={signal.buy_score}/{signal.sell_score} PB={signal.is_pullback}",
+                    quantity=qty,
+                    confidence=max(signal.buy_score, signal.sell_score),
+                    reason=f"B={signal.buy_score}/S={signal.sell_score}/{signal.max_score} PB={signal.is_pullback}",
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     mode="PAPER",
                 ))
@@ -1452,7 +1433,19 @@ def execute_trade(symbol, signal: SignalResult, ai: AIAnalysis):
             time.sleep(1)
 
             p = get_current_position(symbol)
-            entry = float(p.get("entryPrice", price)) if p and p != "ERROR" else price
+            if p == "ERROR" or p is None:
+                logger.critical(f"🚨 مركز غير موجود: {symbol}")
+                return
+
+            entry = float(p.get("entryPrice", price))
+            actual_qty = abs(float(p.get("contracts", 0)))
+
+            if actual_qty <= 0:
+                logger.critical(f"🚨 كمية صفرية: {symbol}")
+                emergency_close(symbol, "Zero quantity")
+                return
+
+            logger.info(f"📦 actual_qty={actual_qty} (requested={qty})")
 
             sl_p = max(0.5, min(signal.sl_percent, CFG.max_sl_percent))
             tp_p = max(1.0, min(signal.tp_percent, CFG.max_tp_percent))
@@ -1466,29 +1459,27 @@ def execute_trade(symbol, signal: SignalResult, ai: AIAnalysis):
             tp_price = float(exchange.price_to_precision(symbol, tp_price))
             cs = "sell" if side == "buy" else "buy"
 
-            # SL MANDATORY
             sl_oid = ""
             try:
                 sl_o = exchange.create_order(
-                    symbol, "STOP_MARKET", cs, qty, None,
+                    symbol, "STOP_MARKET", cs, actual_qty, None,
                     {"stopPrice": sl_price, "reduceOnly": True,
                      "workingType": "MARK_PRICE"})
                 sl_oid = sl_o.get("id", "")
-                logger.info(f"✅ SL: {sl_price}")
+                logger.info(f"✅ SL: {sl_price} | qty={actual_qty}")
             except Exception as e:
                 logger.critical(f"🚨 SL failed: {e}")
                 emergency_close(symbol, "SL failed")
                 return
 
-            # TP
             tp_oid = ""
             try:
                 tp_o = exchange.create_order(
-                    symbol, "TAKE_PROFIT_MARKET", cs, qty, None,
+                    symbol, "TAKE_PROFIT_MARKET", cs, actual_qty, None,
                     {"stopPrice": tp_price, "reduceOnly": True,
                      "workingType": "MARK_PRICE"})
                 tp_oid = tp_o.get("id", "")
-                logger.info(f"✅ TP: {tp_price}")
+                logger.info(f"✅ TP: {tp_price} | qty={actual_qty}")
             except Exception as e:
                 logger.error(f"⚠️ TP failed: {e}")
                 try: exchange.cancel_order(sl_oid, symbol)
@@ -1498,11 +1489,12 @@ def execute_trade(symbol, signal: SignalResult, ai: AIAnalysis):
 
             tid = db.insert_trade(TradeRecord(
                 symbol=symbol, side=pname, entry_price=entry,
-                quantity=qty, sl_price=sl_price, tp_price=tp_price,
+                quantity=actual_qty,
+                sl_price=sl_price, tp_price=tp_price,
                 sl_order_id=sl_oid, tp_order_id=tp_oid,
                 entry_order_id=entry_oid,
                 confidence=max(signal.buy_score, signal.sell_score),
-                reason=f"Score={signal.buy_score}/{signal.sell_score} PB={signal.is_pullback}",
+                reason=f"B={signal.buy_score}/S={signal.sell_score}/{signal.max_score} PB={signal.is_pullback}",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 mode="LIVE",
             ))
@@ -1515,7 +1507,7 @@ def execute_trade(symbol, signal: SignalResult, ai: AIAnalysis):
 
 
 # ============================================================
-#  POSITION MONITOR (نفس V6)
+#  ✅ V8: POSITION MONITOR (contract size + real PnL)
 # ============================================================
 
 class PositionMonitor:
@@ -1524,7 +1516,7 @@ class PositionMonitor:
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
-        logger.info("👁️ Monitor مُفعّل")
+        logger.info("👁️ Monitor V8")
 
     def stop(self):
         self._running = False
@@ -1544,22 +1536,49 @@ class PositionMonitor:
         sl_st = self._order_status(sym, trade.get("sl_order_id"))
         tp_st = self._order_status(sym, trade.get("tp_order_id"))
         pos = get_current_position(sym)
-        if pos == "ERROR": return
+        if pos == "ERROR":
+            return
 
         if pos is None:
-            reason = "STOP_LOSS" if sl_st == "closed" else \
-                     "TAKE_PROFIT" if tp_st == "closed" else "MANUAL"
+            if sl_st == "closed":
+                reason = "STOP_LOSS"
+            elif tp_st == "closed":
+                reason = "TAKE_PROFIT"
+            else:
+                reason = "MANUAL_OR_UNKNOWN"
+
             exit_p, rpnl, comm = self._real_exit(sym, trade)
             entry = trade["entry_price"]
-            if exit_p == 0: exit_p = entry
             qty = trade["quantity"]
+
+            if exit_p == 0:
+                exit_p = entry
+
             if rpnl == 0:
-                rpnl = (exit_p - entry) * qty if trade["side"] == "LONG" \
-                       else (entry - exit_p) * qty
-            pnl_pct = (rpnl / (entry * qty)) * 100 if entry * qty else 0
+                cs = self._get_contract_size(sym)
+                real_qty = qty * cs
+                if trade["side"] == "LONG":
+                    rpnl = (exit_p - entry) * real_qty
+                else:
+                    rpnl = (entry - exit_p) * real_qty
+
+            notional = entry * qty if entry * qty else 1
+            pnl_pct = (rpnl / notional) * 100
+
             db.close_trade(trade["id"], exit_p, rpnl, pnl_pct, comm, reason)
-            logger.info(f"📊 {sym} | {reason} | PnL={rpnl:.4f} ({pnl_pct:.2f}%)")
+            logger.info(
+                f"📊 {sym} | {reason} | "
+                f"PnL={rpnl:.4f} USDT ({pnl_pct:.2f}%) | "
+                f"Comm={comm:.4f} | Exit={exit_p}"
+            )
             self._cancel_remaining(sym, trade)
+
+    def _get_contract_size(self, sym) -> float:
+        try:
+            market = exchange.market(sym)
+            return float(market.get("contractSize", 1) or 1)
+        except Exception:
+            return 1.0
 
     def _order_status(self, sym, oid):
         if not oid: return "unknown"
@@ -1570,16 +1589,26 @@ class PositionMonitor:
     def _real_exit(self, sym, trade):
         ep, rpnl, comm = 0, 0, 0
         try:
-            trades = exchange.fetch_my_trades(sym, limit=20)
+            trades = exchange.fetch_my_trades(sym, limit=30)
             for t in reversed(trades):
-                if t.get("reduceOnly"):
-                    ep = float(t.get("price", 0))
-                    comm = float(t.get("fee", {}).get("cost", 0))
+                if t.get("reduceOnly") or \
+                   (t.get("side") == "sell" and trade["side"] == "LONG") or \
+                   (t.get("side") == "buy" and trade["side"] == "SHORT"):
+                    ep = float(t.get("price", 0) or t.get("average", 0))
+                    fee = t.get("fee", {})
+                    comm = float(fee.get("cost", 0) or 0)
+                    info = t.get("info", {})
+                    rpnl_str = info.get("realizedPnl", "0")
+                    rpnl = float(rpnl_str) if rpnl_str else 0
                     break
-        except: pass
+        except Exception as e:
+            logger.debug(f"fetch_my_trades {sym}: {e}")
         if ep == 0:
-            try: ep = exchange.fetch_ticker(sym)["last"]
-            except: pass
+            try:
+                ep = exchange.fetch_ticker(sym)["last"]
+                logger.warning(f"⚠️ Fallback ticker: {ep}")
+            except Exception:
+                pass
         return ep, rpnl, comm
 
     def _cancel_remaining(self, sym, trade):
@@ -1592,14 +1621,13 @@ class PositionMonitor:
 
 
 # ============================================================
-#  WEBSOCKET (ديناميكي - للمرشحين فقط)
+#  WEBSOCKET
 # ============================================================
 
 async def websocket_worker():
     delay = CFG.ws_reconnect_delay
 
     while True:
-        # بناء قائمةStreams من العملات النشطة
         with active_lock:
             current = dict(active_symbols)
 
@@ -1630,7 +1658,6 @@ async def websocket_worker():
                     tf = k["i"]
                     candle = [k["t"], float(k["o"]), float(k["h"]),
                               float(k["l"]), float(k["c"]), float(k["v"])]
-
                     candle_mgr.update(sk, tf, candle, k["x"])
 
         except Exception as e:
@@ -1646,11 +1673,11 @@ async def websocket_worker():
 
 def main():
     logger.info("=" * 60)
-    logger.info("🤖 AI TRADING BOT V7 - Dynamic Scanner")
+    logger.info("🤖 AI TRADING BOT V8 - Dynamic Scanner")
     logger.info(f"   Mode: {'📝 PAPER' if CFG.dry_run else '💰 LIVE'}")
     logger.info(f"   Watchlist: {len(CFG.watchlist)} coins")
-    logger.info(f"   Scanner: every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
-    logger.info(f"   MinScore: {CFG.min_score_to_enter}/10")
+    logger.info(f"   Scanner: every {CFG.scanner_interval}s -> Top {CFG.scanner_top_n}")
+    logger.info(f"   MinScore: {CFG.min_score_to_enter}/12")
     logger.info(f"   RSI Block: >{CFG.rsi_extreme_overbought} / <{CFG.rsi_extreme_oversold}")
     logger.info(f"   ADX Threshold: {CFG.adx_threshold}")
     logger.info(f"   MaxOpen: {CFG.max_open_positions} | MaxDaily: {CFG.max_daily_trades}")
@@ -1669,14 +1696,12 @@ def main():
     threading.Thread(target=run_server, daemon=True).start()
     time.sleep(2)
 
-    # اختبار Binance
     try:
         t = exchange.fetch_ticker("BTC/USDT:USDT")
         logger.info(f"✅ Binance OK | BTC: {t['last']}")
     except Exception as e:
         logger.critical(f"❌ Binance: {e}"); return
 
-    # تحميل أولي لكل العملات (Scanner يحتاج بيانات)
     logger.info("📥 تحميل بيانات أولية...")
     for sk, sym in CFG.watchlist.items():
         candle_mgr.ensure_symbol(sk, CFG.timeframes)
@@ -1690,7 +1715,6 @@ def main():
             time.sleep(0.2)
     logger.info("✅ البيانات الأولية جاهزة")
 
-    # تشغيل المكونات
     monitor = PositionMonitor()
     monitor.start()
 
