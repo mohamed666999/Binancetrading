@@ -51,7 +51,7 @@ class Config:
     ai_model: str = "deepseek-ai/deepseek-v4-pro"
     ai_temperature: float = 0.0
     ai_max_tokens: int = 400
-    dry_run: bool = True
+    dry_run: bool = False
     leverage: int = 10
     margin_usdt: float = 10.0
     max_daily_trades: int = 8
