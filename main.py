@@ -24,16 +24,12 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("BOT")
 
 
-# ================================================================
-#  CONFIG
-# ================================================================
 @dataclass
 class Config:
     binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
     binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
     nvidia_api_key: str = "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"
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
-
     dry_run: bool = False
     leverage: int = 10
     margin_usdt: float = 10.0
@@ -42,18 +38,15 @@ class Config:
     cooldown_seconds: int = 180
     max_sl_percent: float = 5.0
     max_tp_percent: float = 10.0
-
-    # ✅ MSSI Weights
     mssi_weight: float = 0.85
     ai_weight: float = 0.15
     min_long_score: float = 63.0
     min_short_score: float = 63.0
-    max_risk_for_entry: float = 68.0
-    min_entry_quality: float = 58.0
-    min_confidence: float = 55.0
+    max_risk_for_entry: float = 72.0
+    min_entry_quality: float = 52.0
+    min_confidence: float = 52.0
     use_ai_veto: bool = True
     use_ai_explainer: bool = True
-
     scanner_interval: int = 300
     scanner_top_n: int = 5
     scanner_min_volume_usdt: float = 5_000_000
@@ -64,7 +57,6 @@ class Config:
     ws_reconnect_delay: int = 10
     candle_maxlen: int = 500
     flask_port: int = 8080
-
     watchlist: Dict[str, str] = field(default_factory=lambda: {
         "btcusdt":"BTC/USDT:USDT","ethusdt":"ETH/USDT:USDT",
         "solusdt":"SOL/USDT:USDT","bnbusdt":"BNB/USDT:USDT",
@@ -83,9 +75,6 @@ class Config:
 CFG = Config()
 
 
-# ================================================================
-#  ENUMS & DATA
-# ================================================================
 class Decision(Enum):
     BUY="BUY"; SELL="SELL"; WAIT="WAIT"
 class TrendDirection(Enum):
@@ -149,9 +138,6 @@ class TrendConfirmation:
     reasons:List[str]=field(default_factory=list)
 
 
-# ================================================================
-#  MSSI UTILITIES
-# ================================================================
 def clamp(x, lo=0.0, hi=100.0): return max(lo, min(hi, x))
 def safe_div(a, b): return a/b if abs(b) > 1e-12 else 0.0
 def _mean(v): return sum(v)/len(v) if v else 0.0
@@ -167,68 +153,44 @@ def _sigmoid(x):
 def scale_signed_to_100(x): return clamp((x+1.0)*50.0, 0.0, 100.0)
 
 
-# ================================================================
-#  MSSI ENGINE — Raw Features + Regime + 14 Scores + Decision
-# ================================================================
 class MSSIEngine:
 
     def extract(self, data) -> Optional[RawFeatures]:
-        """Extract raw features from OHLCV list"""
         if len(data) < 30: return None
         o=[float(x[1]) for x in data]; h=[float(x[2]) for x in data]
         l=[float(x[3]) for x in data]; c=[float(x[4]) for x in data]
         v=[float(x[5]) for x in data]
         n=len(c); t=n-1
         f=RawFeatures(); f.price=c[t]
-
-        # Returns
         f.ret_1 = safe_div(c[t]-c[t-1], c[t-1]) if t>=1 else 0
         f.ret_5 = safe_div(c[t]-c[t-5], c[t-5]) if t>=5 else 0
         f.ret_20 = safe_div(c[t]-c[t-20], c[t-20]) if t>=20 else 0
-
-        # True Ranges
         trs=[max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1,n)]
         f.true_range = trs[-1] if trs else 0
         atr20 = _mean(trs[-20:]) if len(trs)>=20 else _mean(trs)
         f.atr_ratio = safe_div(atr20, c[t])
         rets=[safe_div(c[i]-c[i-1], c[i-1]) for i in range(1,n)]
         f.realized_vol = _std(rets[-20:]) if len(rets)>=20 else _std(rets)
-
-        # Directional Efficiency
         net = abs(c[t]-c[max(0,t-20)])
         path = sum(abs(c[i]-c[i-1]) for i in range(max(1,t-19), t+1))
         f.efficiency = min(safe_div(net, path), 1.0)
         f.noise = 1.0 - f.efficiency
-
-        # Persistence
         signs=[1 if c[i]>=c[i-1] else -1 for i in range(max(1,t-19), t+1)]
         f.persistence = max(sum(1 for i in range(1,len(signs)) if signs[i]==signs[i-1]),0)/max(len(signs)-1,1) if len(signs)>1 else 0
-
-        # Range Expansion / Compression
         f.range_expansion = safe_div(trs[-1], atr20) if atr20>0 else 1.0
         short_rng = max(h[-5:])-min(l[-5:]) if n>=5 else 0
         long_rng = max(h[-20:])-min(l[-20:]) if n>=20 else 1
         f.compression = clamp(1.0 - safe_div(short_rng, long_rng), 0, 1)
-
-        # Volume
         vol_z = _zscore(v[t], v[-20:]) if n>=20 else 0
         f.volume_zscore = vol_z
         f.participation = 0.6*_sigmoid(vol_z) + 0.4*_sigmoid(0)
-
-        # Buy/Sell Imbalance (proxy from close location)
         rng = max(h[t]-l[t], 1e-12)
         f.close_location = safe_div(c[t]-l[t], rng)
         f.buy_sell_imbalance = (f.close_location - 0.5) * 2 * min(abs(vol_z)/2, 1.0)
         f.delta_pressure = f.buy_sell_imbalance * (1 if f.ret_1>=0 else -1)
-
-        # OI / Funding (not available from OHLCV, set 0)
         f.oi_change = 0; f.oi_price_agreement = 0; f.funding_stress = 0
-
-        # Wicks
         uw = h[t]-max(o[t],c[t]); lw = min(o[t],c[t])-l[t]
         f.wick_rejection = safe_div(max(uw,lw), rng)
-
-        # Pressures
         f.breakout_pressure = (0.35*min(f.range_expansion/2,1) + 0.25*f.efficiency +
                                0.20*f.participation + 0.20*max(f.buy_sell_imbalance,0))
         f.reversal_pressure = (0.30*f.wick_rejection + 0.25*max(-f.delta_pressure,0) +
@@ -258,96 +220,63 @@ class MSSIEngine:
         m = MSSIOutput()
         m.regime = regime.value
         m.direction = direction.value
-
-        # 1. direction_bias [0-100 mapped from signed]
         db_raw = (0.35*max(min(f.ret_20*15,1),-1) + 0.20*max(min(f.ret_5*20,1),-1) +
                   0.20*f.buy_sell_imbalance + 0.15*f.oi_price_agreement +
                   0.10*max(min((f.close_location-0.5)*2,1),-1))
         m.direction_bias = scale_signed_to_100(db_raw)
-
-        # 2. trend_strength
         m.trend_strength = clamp(35*f.efficiency + 25*min(f.range_expansion/1.8,1) +
                                  20*f.participation + 20*max(f.oi_price_agreement,0))
-
-        # 3. momentum_score
         m.momentum_score = clamp(30*abs(max(min(f.ret_1*80,1),-1)) +
                                  35*abs(max(min(f.ret_5*25,1),-1)) +
                                  35*(f.buy_sell_imbalance+1)/2)
-
-        # 4. market_structure_score
         m.market_structure_score = clamp(40*f.efficiency + 25*(1-f.noise) +
                                          20*max(min((f.close_location-0.5)*2,1),0) +
                                          15*max(f.oi_price_agreement,0))
-
-        # 5. acceptance_score
         m.acceptance_score = clamp(35*max(min((f.close_location-0.5)*2,1),0) +
                                    25*(1-f.wick_rejection) + 20*f.efficiency +
                                    20*min(f.range_expansion/1.5,1))
-
-        # 6. participation_score
         m.participation_score = clamp(45*f.participation +
                                       30*min(max(f.volume_zscore,0)/3,1) +
                                       25*min(abs(f.buy_sell_imbalance),1))
-
-        # 7. continuation_probability
         m.continuation_probability = clamp(30*f.efficiency + 20*max(f.oi_price_agreement,0) +
                                            20*f.participation + 15*m.acceptance_score/100 +
                                            15*f.persistence)
-
-        # 8. reversal_probability
         m.reversal_probability = clamp(30*f.wick_rejection + 25*f.noise +
                                        20*max(0,f.range_expansion-1.3)/0.7 +
                                        15*(1-f.efficiency) + 10*(1-f.persistence))
-
-        # 9. breakout_probability
         m.breakout_probability = clamp(25*m.momentum_score/100 + 20*f.participation +
                                        20*f.compression + 20*f.efficiency + 15*(1-f.noise))
-
-        # 10. pullback_quality
         m.pullback_quality = clamp(35*f.efficiency + 25*m.acceptance_score/100 +
                                    20*(1-m.exhaustion_score/100) + 20*f.persistence)
-
-        # 11. exhaustion_score
         m.exhaustion_score = clamp(35*f.wick_rejection + 30*max(0,f.range_expansion-1.2)/0.8 +
                                    20*(1-f.efficiency) + 15*max(0,-f.buy_sell_imbalance))
-
-        # 12. noise_score
         m.noise_score = clamp(55*f.noise + 25*(1-f.persistence) +
                               20*(1-abs(f.close_location-0.5)*2))
-
-        # 13. risk_score
         m.risk_score = clamp(30*min(f.range_expansion/2,1) + 25*m.reversal_probability/100 +
                              20*m.noise_score/100 + 15*m.exhaustion_score/100 +
                              10*(1-m.pullback_quality/100))
-
-        # 14. entry_quality
         eq_raw = (0.24*m.trend_strength + 0.16*m.momentum_score +
                   0.15*m.market_structure_score + 0.14*m.participation_score +
                   0.14*m.continuation_probability + 0.09*m.pullback_quality -
                   0.08*m.reversal_probability - 0.14*m.risk_score)
         m.entry_quality = clamp(eq_raw)
-
-        # SL/TP
         m.sl_percent = max(0.5, min(f.atr_ratio*100*1.5, CFG.max_sl_percent))
         m.tp_percent = max(1.0, min(f.atr_ratio*100*3.0, CFG.max_tp_percent))
 
-        # Decision
         is_bull = direction == TrendDirection.BULLISH
         is_bear = direction == TrendDirection.BEARISH
-        min_score = CFG.min_long_score if is_bull else CFG.min_short_score
 
-        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8:
+        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
             m.final_score = m.confidence
-        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8:
+        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias <= (100 - CFG.min_short_score):
             m.decision = "SELL"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
             m.final_score = m.confidence
         else:
             m.decision = "WAIT"; m.confidence = 0; m.final_score = 0
 
-        # Reasons
         m.reasons = [
             f"Regime={regime.value} Dir={direction.value}",
             f"DE={f.efficiency:.3f} Noise={f.noise:.3f} Persist={f.persistence:.2f}",
@@ -365,8 +294,6 @@ class MSSIEngine:
         direction = self.infer_direction(f)
         regime = self.detect_regime(f, direction)
         m = self.score(f, regime, direction)
-
-        # Blend with 1D
         if data_1d and len(data_1d) >= 30:
             fd = self.extract(data_1d)
             if fd:
@@ -381,12 +308,11 @@ class MSSIEngine:
                 m.risk_score = m.risk_score*0.7 + md.risk_score*0.3
                 m.confidence = m.confidence*0.7 + md.confidence*0.3
                 m.final_score = m.confidence
-                # Re-evaluate with blended
                 is_bull = m.direction_bias > 50
                 is_bear = m.direction_bias < 50
-                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8:
+                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias >= CFG.min_long_score:
                     m.decision = "BUY"
-                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8:
+                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias <= (100 - CFG.min_short_score):
                     m.decision = "SELL"
                 else:
                     m.decision = "WAIT"; m.confidence = 0; m.final_score = 0
@@ -395,9 +321,6 @@ class MSSIEngine:
 mssi_engine = MSSIEngine()
 
 
-# ================================================================
-#  DATABASE
-# ================================================================
 class TradeDB:
     def __init__(self, path):
         self.conn = sqlite3.connect(path, check_same_thread=False)
@@ -448,10 +371,6 @@ class TradeDB:
 
 db = TradeDB(CFG.db_path)
 
-
-# ================================================================
-#  FLASK
-# ================================================================
 app = Flask(__name__)
 bot_stats = {"status":"STARTING","version":"MSSI-V1","uptime":0,"trades_today":0,
              "open_positions":0,"scanner":[],"last_analysis":{},
@@ -471,18 +390,10 @@ def health():
     return jsonify(bot_stats)
 def run_server(): app.run(host="0.0.0.0",port=CFG.flask_port,debug=False,use_reloader=False)
 
-
-# ================================================================
-#  EXCHANGE + AI
-# ================================================================
 exchange_public = ccxt.binance({"enableRateLimit":True,"options":{"defaultType":"swap","adjustForTimeDifference":True}})
 exchange = ccxt.binance({"apiKey":CFG.binance_api_key,"secret":CFG.binance_secret,"enableRateLimit":True,"options":{"defaultType":"swap","adjustForTimeDifference":True}})
 ai_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=CFG.nvidia_api_key)
 
-
-# ================================================================
-#  IP MONITOR
-# ================================================================
 def get_ip():
     try: return requests.get("https://api.ipify.org", timeout=10).text
     except: return "UNKNOWN"
@@ -512,10 +423,6 @@ class IPMonitor:
 
 ip_monitor = IPMonitor()
 
-
-# ================================================================
-#  CANDLE MANAGER
-# ================================================================
 class CandleManager:
     def __init__(self, maxlen=500):
         self._c={}; self._f={}; self._lock=threading.Lock(); self._m=maxlen
@@ -551,9 +458,6 @@ trade_state = {}; execution_lock = threading.Lock()
 active_symbols = {}; active_lock = threading.Lock()
 
 
-# ================================================================
-#  AI ANALYST (veto/filter only — 15%)
-# ================================================================
 class AIAnalyst:
     def analyze(self, symbol, mssi: MSSIOutput) -> AIResult:
         result = AIResult()
@@ -610,9 +514,6 @@ Noise: {mssi.noise_score:.1f}/100
 ai_analyst = AIAnalyst()
 
 
-# ================================================================
-#  SCANNER
-# ================================================================
 class MarketScanner:
     def __init__(self): self._run=True
     def start(self): threading.Thread(target=self._loop,daemon=True).start(); logger.info("Scanner MSSI")
@@ -662,7 +563,6 @@ class MarketScanner:
                 ap=(atr/price)*100; result.atr_pct=ap
                 if ap<CFG.scanner_min_atr_pct: return None
         except: return None
-        # Quick efficiency score
         if len(c)>=20:
             net=abs(c[-1]-c[-20]); path=sum(abs(c[i]-c[i-1]) for i in range(len(c)-20,len(c)))
             eff=net/path if path>0 else 0
@@ -673,38 +573,27 @@ class MarketScanner:
         if cm.count(sk,"1h")<50: self._load(sk,sym)
         d1h=cm.get(sk,"1h"); d1d=cm.get(sk,"1d")
         if len(d1h)<50: logger.info(f"Not enough: {sym}"); return
-
-        # ✅ MSSI Engine
         mssi = mssi_engine.analyze(d1h, d1d if len(d1d)>=30 else None)
         if not mssi: logger.info(f"MSSI fail: {sym}"); return
-
         logger.info(f">>> MSSI {sym}: {mssi.decision} | Regime={mssi.regime} | Dir={mssi.direction}")
         for r in mssi.reasons: logger.info(f"   {r}")
-
-        # ✅ AI = veto/filter only
         ai = ai_analyst.analyze(sym, mssi)
-
-        # ✅ Final Decision: MSSI 85% + AI 15% veto
         final = FinalDecision()
         final.sl_percent = mssi.sl_percent; final.tp_percent = mssi.tp_percent
         final.regime = mssi.regime; final.is_pullback = mssi.pullback_quality > 50
         final.mssi_score = mssi.confidence; final.ai_score = ai.confidence
         final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
-
         if mssi.decision == "WAIT":
             final.decision = Decision.WAIT; final.final_score = 0
             final.reasons = [f"MSSI WAIT | Regime={mssi.regime}"] + mssi.reasons
         elif ai.error:
-            # AI failed → MSSI decides alone
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
             final.final_score = mssi.confidence * CFG.mssi_weight
             final.reasons = [f"MSSI {mssi.decision} (AI_ERROR) | Conf={mssi.confidence:.1f}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision == "WAIT" and ai.confidence >= 75:
-            # AI strong veto
             final.decision = Decision.WAIT; final.final_score = 0
             final.reasons = [f"AI VETO (conf={ai.confidence}) | MSSI was {mssi.decision}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision != mssi.decision and ai.decision != "WAIT" and ai.confidence >= 70:
-            # AI disagrees strongly → reduce score
             final.final_score = mssi.confidence * CFG.mssi_weight * 0.7
             if final.final_score >= CFG.min_confidence:
                 final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
@@ -713,22 +602,17 @@ class MarketScanner:
                 final.decision = Decision.WAIT
                 final.reasons = [f"MSSI {mssi.decision} REDUCED below threshold"] + mssi.reasons
         else:
-            # Agreement or AI weak → MSSI decides
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
             final.final_score = mssi.confidence * CFG.mssi_weight + ai.confidence * CFG.ai_weight
             final.reasons = [f"MSSI {mssi.decision} | Score={final.final_score:.1f} | AI={ai.decision}({ai.confidence})"] + mssi.reasons
-
         logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | {final.reasons[0] if final.reasons else ''}")
-
         bot_stats["last_analysis"][sym]={"decision":final.decision.value,"final_score":round(final.final_score,1),
             "regime":mssi.regime,"ai":f"{ai.decision}({ai.confidence}){'[ERR]' if ai.error else ''}",
             "time":datetime.now(timezone.utc).isoformat()}
-
         if final.decision==Decision.WAIT: return
         if final.final_score<CFG.min_confidence:
             logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}"); return
         execute_trade(sym, final)
-
     def _load(self,sk,sym):
         for tf in CFG.timeframes:
             try:
@@ -739,9 +623,6 @@ class MarketScanner:
             time.sleep(0.3)
 
 
-# ================================================================
-#  EXECUTION (LIVE)
-# ================================================================
 def get_pos(sym):
     try:
         for p in exchange.fetch_positions([sym]):
@@ -821,9 +702,6 @@ def execute_trade(sym, final):
             logger.error(f"Exec: {e}",exc_info=True); emergency_close(sym,str(e))
 
 
-# ================================================================
-#  POSITION MONITOR
-# ================================================================
 class PositionMonitor:
     def __init__(self): self._run=True
     def start(self): threading.Thread(target=self._loop,daemon=True).start(); logger.info("Monitor")
@@ -878,9 +756,6 @@ class PositionMonitor:
             except: pass
 
 
-# ================================================================
-#  WEBSOCKET
-# ================================================================
 async def ws_worker():
     delay=CFG.ws_reconnect_delay
     while True:
@@ -903,9 +778,6 @@ async def ws_worker():
         await asyncio.sleep(delay); delay=min(delay*2,120)
 
 
-# ================================================================
-#  MAIN
-# ================================================================
 def main():
     ip = show_deploy_ip()
     logger.info("="*60)
@@ -913,19 +785,17 @@ def main():
     logger.info(f"   IP: {ip}")
     logger.info(f"   MSSI weight: {CFG.mssi_weight*100:.0f}% | AI weight: {CFG.ai_weight*100:.0f}% (veto/filter)")
     logger.info(f"   Min Entry Quality: {CFG.min_entry_quality} | Min Confidence: {CFG.min_confidence}")
-    logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | AI Veto: {CFG.use_ai_veto}")
+    logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | Min DirBias Long: {CFG.min_long_score} | Short: {CFG.min_short_score}")
+    logger.info(f"   AI Veto: {CFG.use_ai_veto}")
     logger.info(f"   Watchlist: {len(CFG.watchlist)} | Scanner: {CFG.scanner_interval}s -> Top {CFG.scanner_top_n}")
     logger.info(f"   Leverage: x{CFG.leverage} | Margin: {CFG.margin_usdt} USDT")
     logger.info("="*60)
-
     ip_monitor.start()
     threading.Thread(target=run_server,daemon=True).start(); time.sleep(2)
-
     try:
         t=exchange_public.fetch_ticker("BTC/USDT:USDT")
         logger.info(f"Binance OK | BTC: {t['last']}")
     except Exception as e: logger.critical(f"Binance: {e}"); return
-
     logger.info("Loading data...")
     for sk,sym in CFG.watchlist.items():
         cm.ensure(sk,CFG.timeframes)
@@ -937,11 +807,9 @@ def main():
             except: pass
             time.sleep(0.2)
     logger.info("Data ready")
-
     monitor=PositionMonitor(); monitor.start()
     scanner=MarketScanner(); scanner.start()
     bot_stats["status"]="RUNNING"
-
     try: asyncio.run(ws_worker())
     except KeyboardInterrupt: logger.info("Shutdown"); scanner.stop(); monitor.stop(); ip_monitor.stop()
 
