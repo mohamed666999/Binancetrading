@@ -40,12 +40,12 @@ class Config:
     max_tp_percent: float = 10.0
     mssi_weight: float = 0.85
     ai_weight: float = 0.15
-    min_long_score: float = 63.0
-    min_short_score: float = 63.0
-    max_risk_for_entry: float = 72.0
-    min_entry_quality: float = 52.0
-    min_confidence: float = 52.0
-    use_ai_veto: bool = True
+    min_long_score: float = 58.0
+    min_short_score: float = 42.0
+    max_risk_for_entry: float = 78.0
+    min_entry_quality: float = 35.0
+    min_confidence: float = 40.0
+    use_ai_veto: bool = False
     use_ai_explainer: bool = True
     scanner_interval: int = 300
     scanner_top_n: int = 5
@@ -266,11 +266,11 @@ class MSSIEngine:
         is_bull = direction == TrendDirection.BULLISH
         is_bear = direction == TrendDirection.BEARISH
 
-        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias >= CFG.min_long_score:
+        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
             m.final_score = m.confidence
-        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias <= (100 - CFG.min_short_score):
+        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias <= (100 - CFG.min_short_score):
             m.decision = "SELL"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
             m.final_score = m.confidence
@@ -310,9 +310,9 @@ class MSSIEngine:
                 m.final_score = m.confidence
                 is_bull = m.direction_bias > 50
                 is_bear = m.direction_bias < 50
-                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias >= CFG.min_long_score:
+                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias >= CFG.min_long_score:
                     m.decision = "BUY"
-                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 8 and m.direction_bias <= (100 - CFG.min_short_score):
+                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias <= (100 - CFG.min_short_score):
                     m.decision = "SELL"
                 else:
                     m.decision = "WAIT"; m.confidence = 0; m.final_score = 0
