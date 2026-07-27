@@ -39,7 +39,7 @@ class Config:
     leverage: int = 10
     margin_usdt: float = 10.0
     max_daily_trades: int = 8
-    max_open_positions: int = 2          # ✅ رُفع إلى 2 لتجنب الإغلاق الكامل
+    max_open_positions: int = 1  # ✅ خُفّض إلى 1 لزيادة الفرص
     cooldown_seconds: int = 180
     max_sl_percent: float = 5.0
     max_tp_percent: float = 10.0
@@ -47,15 +47,15 @@ class Config:
     ai_weight: float = 0.15
     min_long_score: float = 58.0
     min_short_score: float = 42.0
-    max_risk_for_entry: float = 82.0
-    min_entry_quality: float = 28.0
-    min_confidence: float = 32.0
+    max_risk_for_entry: float = 82.0  # ✅ رُفع إلى 82
+    min_entry_quality: float = 28.0   # ✅ خُفّض إلى 28
+    min_confidence: float = 32.0     # ✅ خُفّض إلى 32
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
-    scanner_interval: int = 60
-    scanner_top_n: int = 10
+    scanner_interval: int = 60       # ✅ خُفّض إلى 60 ثانية
+    scanner_top_n: int = 10          # ✅ رُفع إلى 10 عملات
     scanner_min_volume_usdt: float = 5_000_000
-    scanner_min_atr_pct: float = 0.25     # ✅ خُفّض إلى 0.25 لالتقاط فرص السوق الهادئ
+    scanner_min_atr_pct: float = 0.5
     monitor_interval: int = 15
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
@@ -75,8 +75,7 @@ class Config:
         "aptusdt":"APT/USDT:USDT","opustdt":"OP/USDT:USDT",
     })
     timeframes: List[str] = field(default_factory=lambda: ["1m","1h","1d"])
-    db_path: str = "trades_v2.db"       # ✅ تم تغيير اسم DB لبدء نظيف
-
+    db_path: str = "trades.db"
 
 CFG = Config()
 
@@ -272,6 +271,7 @@ class MSSIEngine:
         is_bull = direction == TrendDirection.BULLISH
         is_bear = direction == TrendDirection.BEARISH
 
+        # ✅ تم إزالة "+ 3" من شرط التوازن
         if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
@@ -282,7 +282,8 @@ class MSSIEngine:
             m.final_score = m.confidence
         else:
             m.decision = "WAIT"
-            m.final_score = m.confidence  # لا نصفر الثقة
+            # ✅ لا نصفر الثقة — نحافظ عليها لتحليل أفضل لاحقاً
+            m.final_score = m.confidence  # not 0
 
         m.reasons = [
             f"Regime={regime.value} Dir={direction.value}",
@@ -317,13 +318,14 @@ class MSSIEngine:
                 m.final_score = m.confidence
                 is_bull = m.direction_bias > 50
                 is_bear = m.direction_bias < 50
+                # ✅ نفس التعديل: إزالة "+ 3"
                 if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
                     m.decision = "BUY"
                 elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
                     m.decision = "SELL"
                 else:
                     m.decision = "WAIT"
-                    m.final_score = m.confidence
+                    m.final_score = m.confidence  # ✅ لا نصفر
         return m
 
 mssi_engine = MSSIEngine()
@@ -343,7 +345,6 @@ class TradeDB:
                 pnl_percent REAL, commission REAL DEFAULT 0, closed_at TEXT,
                 close_reason TEXT, ai_explanation TEXT, final_score REAL, regime TEXT)""")
             self.conn.commit()
-
     def insert_trade(self, **kw):
         with self.lock:
             cur = self.conn.execute(
@@ -357,62 +358,26 @@ class TradeDB:
                  kw.get("status","OPEN"),kw.get("ai_explanation",""),kw.get("final_score",0),
                  kw.get("regime","")))
             self.conn.commit(); return cur.lastrowid
-
     def close_trade(self, tid, ep, rpnl, pp, comm, reason):
         with self.lock:
             self.conn.execute("UPDATE trades SET status='CLOSED',exit_price=?,realized_pnl=?,"
                 "pnl_percent=?,commission=?,closed_at=?,close_reason=? WHERE id=?",
                 (ep,rpnl,pp,comm,datetime.now(timezone.utc).isoformat(),reason,tid))
             self.conn.commit()
-
     def get_open_trades(self):
         with self.lock:
             rows = self.conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
             cols = [d[0] for d in self.conn.execute("SELECT * FROM trades LIMIT 0").description]
         return [dict(zip(cols,r)) for r in rows]
-
     def count_today(self):
         t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with self.lock:
             r = self.conn.execute("SELECT COUNT(*) FROM trades WHERE timestamp LIKE ?",(f"{t}%",)).fetchone()
         return r[0] if r else 0
-
     def open_count(self):
         with self.lock:
             r = self.conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()
         return r[0] if r else 0
-
-    # ✅ دالة تنظيف الصفقات المعلقة غير الحقيقية (التي أُغلقت خارج البوت)
-    def cleanup_stale_positions(self):
-        logger.info("🔍 Cleaning stale OPEN positions...")
-        open_trades = self.get_open_trades()
-        cleaned = 0
-        for t in open_trades:
-            sym = t["symbol"]
-            try:
-                pos = exchange.fetch_positions([sym])
-                found = any(
-                    p.get("contracts") and float(p.get("contracts",0)) > 0
-                    for p in pos
-                )
-                if not found:
-                    logger.warning(f"❌ Stale trade #{t['id']} ({sym}) — no position on exchange. Marking as CLOSED.")
-                    self.close_trade(
-                        t["id"],
-                        ep=t.get("entry_price", 0),
-                        rpnl=0.0,
-                        pp=0.0,
-                        comm=0.0,
-                        reason="STALE_POSITION_CLEANUP"
-                    )
-                    cleaned += 1
-            except Exception as e:
-                logger.error(f"⚠️ Failed to check {sym}: {e}")
-        if cleaned:
-            logger.info(f"✅ Cleaned {cleaned} stale positions.")
-        else:
-            logger.info("✅ No stale positions found.")
-
 
 db = TradeDB(CFG.db_path)
 
@@ -629,17 +594,14 @@ class MarketScanner:
         final.mssi_score = mssi.confidence; final.ai_score = ai.confidence
         final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
         if mssi.decision == "WAIT":
-            final.decision = Decision.WAIT
-            final.final_score = mssi.confidence  # لا نصفر
+            final.decision = Decision.WAIT; final.final_score = mssi.confidence  # ✅ لا نصفر
             final.reasons = [f"MSSI WAIT | Regime={mssi.regime}"] + mssi.reasons
         elif ai.error:
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
-            # ✅ استخدام الثقة الكاملة لـ MSSI عند فشل AI
-            final.final_score = mssi.confidence
+            final.final_score = mssi.confidence * CFG.mssi_weight
             final.reasons = [f"MSSI {mssi.decision} (AI_ERROR) | Conf={mssi.confidence:.1f}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision == "WAIT" and ai.confidence >= 75:
-            final.decision = Decision.WAIT
-            final.final_score = mssi.confidence  # لا نصفر
+            final.decision = Decision.WAIT; final.final_score = mssi.confidence  # ✅ لا نصفر
             final.reasons = [f"AI VETO (conf={ai.confidence}) | MSSI was {mssi.decision}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision != mssi.decision and ai.decision != "WAIT" and ai.confidence >= 70:
             final.final_score = mssi.confidence * CFG.mssi_weight * 0.7
@@ -654,19 +616,12 @@ class MarketScanner:
             final.final_score = mssi.confidence * CFG.mssi_weight + ai.confidence * CFG.ai_weight
             final.reasons = [f"MSSI {mssi.decision} | Score={final.final_score:.1f} | AI={ai.decision}({ai.confidence})"] + mssi.reasons
         logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | {final.reasons[0] if final.reasons else ''}")
-
-        # ✅ تسجيل أسباب الرفض بوضوح
-        if final.decision == Decision.WAIT:
-            logger.info(f"🚫 {sym} رُفضت: شروط الدخول غير مكتملة (الثقة: {final.final_score:.1f})")
-            return
-
-        if final.final_score < CFG.min_confidence:
-            logger.info(f"🚫 {sym} رُفضت: الثقة ضعيفة ({final.final_score:.1f} أقل من المطلوب {CFG.min_confidence})")
-            return
-
         bot_stats["last_analysis"][sym]={"decision":final.decision.value,"final_score":round(final.final_score,1),
             "regime":mssi.regime,"ai":f"{ai.decision}({ai.confidence}){'[ERR]' if ai.error else ''}",
             "time":datetime.now(timezone.utc).isoformat()}
+        if final.decision==Decision.WAIT: return
+        if final.final_score<CFG.min_confidence:
+            logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}"); return
         execute_trade(sym, final)
     def _load(self,sk,sym):
         for tf in CFG.timeframes:
@@ -843,17 +798,12 @@ def main():
     logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Leverage: x{CFG.leverage} | Margin: {CFG.margin_usdt} USDT")
     logger.info("="*60)
-
-    # ✅ تنظيف الصفقات المعلقة قبل البدء
-    db.cleanup_stale_positions()
-
     ip_monitor.start()
     threading.Thread(target=run_server,daemon=True).start(); time.sleep(2)
     try:
         t=exchange_public.fetch_ticker("BTC/USDT:USDT")
         logger.info(f"Binance OK | BTC: {t['last']}")
     except Exception as e: logger.critical(f"Binance: {e}"); return
-
     logger.info("Loading data...")
     for sk,sym in CFG.watchlist.items():
         cm.ensure(sk,CFG.timeframes)
@@ -865,15 +815,11 @@ def main():
             except: pass
             time.sleep(0.2)
     logger.info("Data ready")
-
     monitor=PositionMonitor(); monitor.start()
     scanner=MarketScanner(); scanner.start()
     bot_stats["status"]="RUNNING"
-
     try: asyncio.run(ws_worker())
-    except KeyboardInterrupt:
-        logger.info("Shutdown");
-        scanner.stop(); monitor.stop(); ip_monitor.stop()
+    except KeyboardInterrupt: logger.info("Shutdown"); scanner.stop(); monitor.stop(); ip_monitor.stop()
 
 if __name__=="__main__":
     main()
