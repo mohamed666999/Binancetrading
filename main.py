@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-  MSSI TRADING BOT — Market State & Signal Intelligence
-  MSSI = 85% decision | AI = 15% veto/filter
-
-⚠️ تنبيه: المفاتيح في الكود الأصلي كانت مكشوفة.
-   لا تستخدم هذا الملف مباشرة في البيئة الحقيقية دون استبدال المفاتيح بـ os.getenv().
-   أوصي بإنشاء ملف .env وقراءة المفاتيح منه.
-"""
-
 import asyncio, json, time, threading, math, os, sqlite3, logging
 from collections import deque
 from datetime import datetime, timezone
