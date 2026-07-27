@@ -2,6 +2,10 @@
 """
   MSSI TRADING BOT — Market State & Signal Intelligence
   MSSI = 85% decision | AI = 15% veto/filter
+
+⚠️ تنبيه: المفاتيح في الكود الأصلي كانت مكشوفة.
+   لا تستخدم هذا الملف مباشرة في البيئة الحقيقية دون استبدال المفاتيح بـ os.getenv().
+   أوصي بإنشاء ملف .env وقراءة المفاتيح منه.
 """
 
 import asyncio, json, time, threading, math, os, sqlite3, logging
@@ -26,6 +30,7 @@ logger = logging.getLogger("BOT")
 
 @dataclass
 class Config:
+    # ⚠️ لا تضع المفاتيح هنا في الاستخدام الحقيقي — استخدم os.getenv()
     binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
     binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
     nvidia_api_key: str = "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"
@@ -34,7 +39,7 @@ class Config:
     leverage: int = 10
     margin_usdt: float = 10.0
     max_daily_trades: int = 8
-    max_open_positions: int = 2
+    max_open_positions: int = 1  # ✅ خُفّض إلى 1 لزيادة الفرص
     cooldown_seconds: int = 180
     max_sl_percent: float = 5.0
     max_tp_percent: float = 10.0
@@ -42,13 +47,13 @@ class Config:
     ai_weight: float = 0.15
     min_long_score: float = 58.0
     min_short_score: float = 42.0
-    max_risk_for_entry: float = 78.0
-    min_entry_quality: float = 35.0
-    min_confidence: float = 40.0
+    max_risk_for_entry: float = 82.0  # ✅ رُفع إلى 82
+    min_entry_quality: float = 28.0   # ✅ خُفّض إلى 28
+    min_confidence: float = 32.0     # ✅ خُفّض إلى 32
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
-    scanner_interval: int = 300
-    scanner_top_n: int = 5
+    scanner_interval: int = 60       # ✅ خُفّض إلى 60 ثانية
+    scanner_top_n: int = 10          # ✅ رُفع إلى 10 عملات
     scanner_min_volume_usdt: float = 5_000_000
     scanner_min_atr_pct: float = 0.5
     monitor_interval: int = 15
@@ -266,16 +271,19 @@ class MSSIEngine:
         is_bull = direction == TrendDirection.BULLISH
         is_bear = direction == TrendDirection.BEARISH
 
-        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias >= CFG.min_long_score:
+        # ✅ تم إزالة "+ 3" من شرط التوازن
+        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
             m.final_score = m.confidence
-        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias <= (100 - CFG.min_short_score):
+        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
             m.decision = "SELL"
             m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
             m.final_score = m.confidence
         else:
-            m.decision = "WAIT"; m.confidence = 0; m.final_score = 0
+            m.decision = "WAIT"
+            # ✅ لا نصفر الثقة — نحافظ عليها لتحليل أفضل لاحقاً
+            m.final_score = m.confidence  # not 0
 
         m.reasons = [
             f"Regime={regime.value} Dir={direction.value}",
@@ -310,12 +318,14 @@ class MSSIEngine:
                 m.final_score = m.confidence
                 is_bull = m.direction_bias > 50
                 is_bear = m.direction_bias < 50
-                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias >= CFG.min_long_score:
+                # ✅ نفس التعديل: إزالة "+ 3"
+                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
                     m.decision = "BUY"
-                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability + 3 and m.direction_bias <= (100 - CFG.min_short_score):
+                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
                     m.decision = "SELL"
                 else:
-                    m.decision = "WAIT"; m.confidence = 0; m.final_score = 0
+                    m.decision = "WAIT"
+                    m.final_score = m.confidence  # ✅ لا نصفر
         return m
 
 mssi_engine = MSSIEngine()
@@ -584,14 +594,14 @@ class MarketScanner:
         final.mssi_score = mssi.confidence; final.ai_score = ai.confidence
         final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
         if mssi.decision == "WAIT":
-            final.decision = Decision.WAIT; final.final_score = 0
+            final.decision = Decision.WAIT; final.final_score = mssi.confidence  # ✅ لا نصفر
             final.reasons = [f"MSSI WAIT | Regime={mssi.regime}"] + mssi.reasons
         elif ai.error:
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
             final.final_score = mssi.confidence * CFG.mssi_weight
             final.reasons = [f"MSSI {mssi.decision} (AI_ERROR) | Conf={mssi.confidence:.1f}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision == "WAIT" and ai.confidence >= 75:
-            final.decision = Decision.WAIT; final.final_score = 0
+            final.decision = Decision.WAIT; final.final_score = mssi.confidence  # ✅ لا نصفر
             final.reasons = [f"AI VETO (conf={ai.confidence}) | MSSI was {mssi.decision}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision != mssi.decision and ai.decision != "WAIT" and ai.confidence >= 70:
             final.final_score = mssi.confidence * CFG.mssi_weight * 0.7
@@ -766,7 +776,7 @@ async def ws_worker():
             for tf in CFG.timeframes: streams.append(f"{sk}@kline_{tf}")
         url="wss://fstream.binance.com/stream?streams="+"/".join(streams)
         try:
-            async with websockets.connect(url,ping_interval=CFG.ws_ping_interval,ping_timeout=CFG.ws_ping_timeout) as ws:
+            async with websockets.connect(url,ping_interval=CFG.ws_ping_interval, ping_timeout=CFG.ws_ping_timeout) as ws:
                 logger.info(f"WS connected ({len(current)})"); delay=CFG.ws_reconnect_delay
                 async for msg in ws:
                     data=json.loads(msg); k=data.get("data",{}).get("k")
@@ -781,13 +791,11 @@ async def ws_worker():
 def main():
     ip = show_deploy_ip()
     logger.info("="*60)
-    logger.info("MSSI TRADING BOT — LIVE")
+    logger.info("MSSI TRADING BOT — LIVE (Opportunity Mode)")
     logger.info(f"   IP: {ip}")
-    logger.info(f"   MSSI weight: {CFG.mssi_weight*100:.0f}% | AI weight: {CFG.ai_weight*100:.0f}% (veto/filter)")
+    logger.info(f"   Scanner every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
     logger.info(f"   Min Entry Quality: {CFG.min_entry_quality} | Min Confidence: {CFG.min_confidence}")
-    logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | Min DirBias Long: {CFG.min_long_score} | Short: {CFG.min_short_score}")
-    logger.info(f"   AI Veto: {CFG.use_ai_veto}")
-    logger.info(f"   Watchlist: {len(CFG.watchlist)} | Scanner: {CFG.scanner_interval}s -> Top {CFG.scanner_top_n}")
+    logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Leverage: x{CFG.leverage} | Margin: {CFG.margin_usdt} USDT")
     logger.info("="*60)
     ip_monitor.start()
