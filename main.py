@@ -42,11 +42,11 @@ class Config:
     max_tp_percent: float = 10.0
     mssi_weight: float = 0.85
     ai_weight: float = 0.15
-    min_long_score: float = 55.0
-    min_short_score: float = 45.0
+    min_long_score: float = 54.0      # ✅ Sweet Spot (كانت 55)
+    min_short_score: float = 46.0     # ✅ Sweet Spot (كانت 45)
     max_risk_for_entry: float = 85.0
-    min_entry_quality: float = 25.0
-    min_confidence: float = 28.0
+    min_entry_quality: float = 24.0   # ✅ Sweet Spot (كانت 25)
+    min_confidence: float = 26.0      # ✅ Sweet Spot (كانت 28)
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
     scanner_interval: int = 60
@@ -60,7 +60,6 @@ class Config:
     candle_maxlen: int = 500
     flask_port: int = 8080
     watchlist: Dict[str, str] = field(default_factory=lambda: {
-        # القائمة القديمة
         "btcusdt":"BTC/USDT:USDT","ethusdt":"ETH/USDT:USDT",
         "solusdt":"SOL/USDT:USDT","bnbusdt":"BNB/USDT:USDT",
         "xrpusdt":"XRP/USDT:USDT","adausdt":"ADA/USDT:USDT",
@@ -71,20 +70,17 @@ class Config:
         "arbusdt":"ARB/USDT:USDT","dotusdt":"DOT/USDT:USDT",
         "maticusdt":"MATIC/USDT:USDT","ltcusdt":"LTC/USDT:USDT",
         "aptusdt":"APT/USDT:USDT","opustdt":"OP/USDT:USDT",
-        
-        # 🔥 العملات الجديدة المضافة (السيولة والتقلب العالي)
-        "injusdt":"INJ/USDT:USDT",     # Injective
-        "tiausdt":"TIA/USDT:USDT",     # Celestia
-        "seiusdt":"SEI/USDT:USDT",     # Sei
-        "ftmusdt":"FTM/USDT:USDT",     # Fantom
-        "fetusdt":"FET/USDT:USDT",     # Artificial Superintelligence Alliance
-        "galausdt":"GALA/USDT:USDT",   # Gala Games
-        "rndrusdt":"RNDR/USDT:USDT",   # Render
-        "tonusdt":"TON/USDT:USDT",     # Toncoin
-        "bchusdt":"BCH/USDT:USDT",     # Bitcoin Cash
-        "trxusdt":"TRX/USDT:USDT"      # Tron
+        "injusdt":"INJ/USDT:USDT",
+        "tiausdt":"TIA/USDT:USDT",
+        "seiusdt":"SEI/USDT:USDT",
+        "ftmusdt":"FTM/USDT:USDT",
+        "fetusdt":"FET/USDT:USDT",
+        "galausdt":"GALA/USDT:USDT",
+        "rndrusdt":"RNDR/USDT:USDT",
+        "tonusdt":"TON/USDT:USDT",
+        "bchusdt":"BCH/USDT:USDT",
+        "trxusdt":"TRX/USDT:USDT"
     })
-
     timeframes: List[str] = field(default_factory=lambda: ["1m","1h","1d"])
     db_path: str = "trades_v2.db"
 
@@ -327,9 +323,11 @@ class MSSIEngine:
             m.decision = "WAIT"
             m.reasons.append(f"SR touches high: {f.sr_touches}")
             return m
-        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability >= m.reversal_probability - 2 and m.direction_bias >= CFG.min_long_score:
+        # ✅ Sweet Spot: سماحية 10% لاحتمالية الانعكاس
+        allowable_reversal = m.continuation_probability + 10.0
+        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
-        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability >= m.reversal_probability - 2 and m.direction_bias <= (100 - CFG.min_short_score):
+        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
             m.decision = "SELL"
         else:
             m.decision = "WAIT"
@@ -379,9 +377,11 @@ class MSSIEngine:
                 m.final_score = m.confidence
                 is_bull = m.direction_bias > 50
                 is_bear = m.direction_bias < 50
-                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability >= m.reversal_probability - 2 and m.direction_bias >= CFG.min_long_score:
+                # ✅ Sweet Spot: نفس السماحية بعد الدمج
+                allowable_reversal = m.continuation_probability + 10.0
+                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
                     m.decision = "BUY"
-                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability >= m.reversal_probability - 2 and m.direction_bias <= (100 - CFG.min_short_score):
+                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
                     m.decision = "SELL"
                 else:
                     m.decision = "WAIT"
@@ -643,7 +643,6 @@ SR Touches: {mssi.sr_touches}
             result.explanation=f"AI_ERROR: {str(e)[:100]}"
         return result
 
-    # ✅ AI Trade Management: تقييم الصفقات المفتوحة
     def evaluate_open_trade(self, symbol, pnl_pct, elapsed_hours, current_mssi) -> dict:
         if not CFG.use_ai_explainer: return {"action": "HOLD"}
         prompt = f"""أنت مدير محافظ كمّي. لدينا صفقة مفتوحة حالياً.
@@ -943,7 +942,6 @@ class PositionMonitor:
             try: ep=exchange_public.fetch_ticker(sym)["last"]
             except: pass
         return ep,rpnl,comm
-    # ✅ التعديل 1: المكنسة الهجومية
     def _cancel(self, sym, trade):
         for oid in [trade.get("sl_order_id"), trade.get("tp_order_id")]:
             if not oid: continue
@@ -992,14 +990,12 @@ class PositionMonitor:
             atr_value = current_features.atr_ratio * entry 
             pnl_distance = (current_price - entry) if side == "LONG" else (entry - current_price)
             pnl_pct = (pnl_distance / entry) * 100
-            # 🔥 القاعدة 1: تأمين الصفقة بناءً على ATR
             if pnl_distance >= atr_value:
                 new_sl = entry * 1.002 if side == "LONG" else entry * 0.998
                 should_update = (side == "LONG" and sl_price < new_sl) or (side == "SHORT" and sl_price > new_sl)
                 if should_update:
                     logger.info(f"🛡️ {sym} | السعر تحرك +1 ATR. تم تأمين الصفقة (Breakeven).")
                     self._update_binance_orders(sym, trade, new_sl, float(trade["tp_price"]), note="BREAKEVEN_ATR")
-            # 🔥 القاعدة 2: الخروج الذكي مع نظام تأكيد
             current_mssi = mssi_engine.analyze(d1h)
             st = trade_state.setdefault(sym, {})
             if current_mssi:
@@ -1019,15 +1015,11 @@ class PositionMonitor:
                 else:
                     if st.get("invalidation_count", 0) > 0:
                         st["invalidation_count"] = 0
-
-                # 🔥 القاعدة 3: الهدف الذهبي (Scalping Sweet Spot)
                 if pnl_distance > 0 and pnl_pct >= 1.3:
                     logger.info(f"💰 {sym} | السعر وصل للهدف الذهبي (+{pnl_pct:.2f}%). جني أرباح فوري!")
                     st["custom_close_reason"] = "SMART_FAST_TAKE_PROFIT"
                     emergency_close(sym, "SMART_FAST_TAKE_PROFIT")
                     return
-
-                # 🔥 القاعدة 4: تدخل الذكاء الاصطناعي للإدارة
                 trade_time_str = trade["timestamp"].replace("Z", "+00:00")
                 elapsed_hours = (datetime.now(timezone.utc) - datetime.fromisoformat(trade_time_str)).total_seconds() / 3600.0
                 if elapsed_hours > 1.0 or pnl_pct > 0.5:
@@ -1091,12 +1083,13 @@ async def ws_worker():
 def main():
     ip = show_deploy_ip()
     logger.info("="*60)
-    logger.info("MSSI V2 TRADING BOT — LIVE (Enhanced Signals)")
+    logger.info("MSSI V2 TRADING BOT — LIVE (Sweet Spot)")
     logger.info(f"   IP: {ip}")
     logger.info(f"   Scanner every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
     logger.info(f"   Min Entry Quality: {CFG.min_entry_quality} | Min Confidence: {CFG.min_confidence}")
     logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Leverage: x{CFG.leverage} | Margin: {CFG.margin_usdt} USDT")
+    logger.info(f"   DirBias Long>={CFG.min_long_score} Short<={100-CFG.min_short_score} | Reversal Tolerance: +10")
     logger.info("="*60)
 
     db.cleanup_stale_positions()
