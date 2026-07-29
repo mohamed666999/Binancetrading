@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-  MSSI V2 TRADING BOT — Market State & Signal Intelligence
+  MSSI TRADING BOT — Market State & Signal Intelligence
   MSSI = 85% decision | AI = 15% veto/filter
-  Includes: OI, Funding, Vol Regime, Order Flow, SR Touches, Acceleration
-  Enhanced: AI Trade Management after entry
+
+⚠️ تنبيه: المفاتيح في الكود الأصلي كانت مكشوفة.
+   لا تستخدم هذا الملف مباشرة في البيئة الحقيقية دون استبدال المفاتيح بـ os.getenv().
+   أوصي بإنشاء ملف .env وقراءة المفاتيح منه.
 """
 
 import asyncio, json, time, threading, math, os, sqlite3, logging
@@ -28,31 +30,32 @@ logger = logging.getLogger("BOT")
 
 @dataclass
 class Config:
+    # ⚠️ لا تضع المفاتيح هنا في الاستخدام الحقيقي — استخدم os.getenv()
     binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
     binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
     nvidia_api_key: str = "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"
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
     dry_run: bool = False
-    leverage: int = 15
-    margin_usdt: float = 30.0
+    leverage: int = 10
+    margin_usdt: float = 10.0
     max_daily_trades: int = 8
-    max_open_positions: int = 2
+    max_open_positions: int = 1  # ✅ خُفّض إلى 1 لزيادة الفرص
     cooldown_seconds: int = 180
     max_sl_percent: float = 5.0
     max_tp_percent: float = 10.0
     mssi_weight: float = 0.85
     ai_weight: float = 0.15
-    min_long_score: float = 54.0      # ✅ Sweet Spot (كانت 55)
-    min_short_score: float = 46.0     # ✅ Sweet Spot (كانت 45)
-    max_risk_for_entry: float = 85.0
-    min_entry_quality: float = 24.0   # ✅ Sweet Spot (كانت 25)
-    min_confidence: float = 26.0      # ✅ Sweet Spot (كانت 28)
+    min_long_score: float = 58.0
+    min_short_score: float = 42.0
+    max_risk_for_entry: float = 82.0  # ✅ رُفع إلى 82
+    min_entry_quality: float = 28.0   # ✅ خُفّض إلى 28
+    min_confidence: float = 32.0     # ✅ خُفّض إلى 32
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
-    scanner_interval: int = 60
-    scanner_top_n: int = 10
+    scanner_interval: int = 60       # ✅ خُفّض إلى 60 ثانية
+    scanner_top_n: int = 10          # ✅ رُفع إلى 10 عملات
     scanner_min_volume_usdt: float = 5_000_000
-    scanner_min_atr_pct: float = 0.25
+    scanner_min_atr_pct: float = 0.5
     monitor_interval: int = 15
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
@@ -70,19 +73,9 @@ class Config:
         "arbusdt":"ARB/USDT:USDT","dotusdt":"DOT/USDT:USDT",
         "maticusdt":"MATIC/USDT:USDT","ltcusdt":"LTC/USDT:USDT",
         "aptusdt":"APT/USDT:USDT","opustdt":"OP/USDT:USDT",
-        "injusdt":"INJ/USDT:USDT",
-        "tiausdt":"TIA/USDT:USDT",
-        "seiusdt":"SEI/USDT:USDT",
-        "ftmusdt":"FTM/USDT:USDT",
-        "fetusdt":"FET/USDT:USDT",
-        "galausdt":"GALA/USDT:USDT",
-        "rndrusdt":"RNDR/USDT:USDT",
-        "tonusdt":"TON/USDT:USDT",
-        "bchusdt":"BCH/USDT:USDT",
-        "trxusdt":"TRX/USDT:USDT"
     })
     timeframes: List[str] = field(default_factory=lambda: ["1m","1h","1d"])
-    db_path: str = "trades_v2.db"
+    db_path: str = "trades.db"
 
 CFG = Config()
 
@@ -99,7 +92,6 @@ class MarketRegime(Enum):
     HIGH_VOLATILITY="HIGH_VOLATILITY"; LOW_VOLATILITY="LOW_VOLATILITY"
     EXHAUSTION="EXHAUSTION"; REVERSAL="REVERSAL"
 
-
 @dataclass
 class ScannerResult:
     symbol_key:str=""; symbol:str=""; score:float=0.0; volume_usdt:float=0.0
@@ -113,13 +105,10 @@ class RawFeatures:
     efficiency:float=0; range_expansion:float=0; compression:float=0
     volume_zscore:float=0; participation:float=0
     buy_sell_imbalance:float=0; delta_pressure:float=0
-    oi_delta:float=0; oi_price_agreement:float=0; funding_rate:float=0.0
+    oi_change:float=0; oi_price_agreement:float=0; funding_stress:float=0
     wick_rejection:float=0; close_location:float=0
     breakout_pressure:float=0; reversal_pressure:float=0; noise:float=0
     persistence:float=0; price:float=0
-    vol_regime:float=0; order_flow_imbalance:float=0; sr_touches:int=0
-    acceleration_score:float=0; volume_spread_ratio:float=0
-
 
 @dataclass
 class MSSIOutput:
@@ -132,9 +121,6 @@ class MSSIOutput:
     decision:str="WAIT"; confidence:float=0; final_score:float=0
     sl_percent:float=2.0; tp_percent:float=4.0
     reasons:List[str]=field(default_factory=list)
-    oi_delta:float=0; funding_rate:float=0; vol_regime:float=0
-    acceleration_score:float=0; sr_touches:int=0
-
 
 @dataclass
 class AIResult:
@@ -174,7 +160,7 @@ def scale_signed_to_100(x): return clamp((x+1.0)*50.0, 0.0, 100.0)
 
 class MSSIEngine:
 
-    def extract(self, data, oi_data=None, funding_data=None) -> Optional[RawFeatures]:
+    def extract(self, data) -> Optional[RawFeatures]:
         if len(data) < 30: return None
         o=[float(x[1]) for x in data]; h=[float(x[2]) for x in data]
         l=[float(x[3]) for x in data]; c=[float(x[4]) for x in data]
@@ -207,20 +193,13 @@ class MSSIEngine:
         f.close_location = safe_div(c[t]-l[t], rng)
         f.buy_sell_imbalance = (f.close_location - 0.5) * 2 * min(abs(vol_z)/2, 1.0)
         f.delta_pressure = f.buy_sell_imbalance * (1 if f.ret_1>=0 else -1)
-        f.oi_delta = oi_data.get("oi_change", 0) if oi_data else 0
-        f.oi_price_agreement = math.copysign(1.0, f.ret_1) * math.copysign(1.0, f.oi_delta) if f.ret_1 != 0 and f.oi_delta != 0 else 0
-        f.funding_rate = funding_data.get("rate", 0) if funding_data else 0
+        f.oi_change = 0; f.oi_price_agreement = 0; f.funding_stress = 0
         uw = h[t]-max(o[t],c[t]); lw = min(o[t],c[t])-l[t]
         f.wick_rejection = safe_div(max(uw,lw), rng)
         f.breakout_pressure = (0.35*min(f.range_expansion/2,1) + 0.25*f.efficiency +
                                0.20*f.participation + 0.20*max(f.buy_sell_imbalance,0))
         f.reversal_pressure = (0.30*f.wick_rejection + 0.25*max(-f.delta_pressure,0) +
-                               0.25*min(abs(f.funding_rate)*10000,1) + 0.20*(1-f.efficiency))
-        f.vol_regime = clamp(100 * (f.realized_vol / _std(rets[-50:]) if len(rets)>=50 else 1), 0, 200)
-        f.order_flow_imbalance = f.buy_sell_imbalance * f.participation
-        f.acceleration_score = safe_div(f.ret_5 - f.ret_20, max(f.realized_vol, 0.0001))
-        f.volume_spread_ratio = safe_div(v[t] - v[t-5], v[t-5]) if t>=5 else 0
-        f.sr_touches = sum(1 for i in range(max(0,t-10), t) if abs(c[i] - c[i-1])/c[i-1] > 0.005)
+                               0.25*min(f.funding_stress/20,1) + 0.20*(1-f.efficiency))
         return f
 
     def infer_direction(self, f: RawFeatures) -> TrendDirection:
@@ -248,36 +227,28 @@ class MSSIEngine:
         m.direction = direction.value
         db_raw = (0.35*max(min(f.ret_20*15,1),-1) + 0.20*max(min(f.ret_5*20,1),-1) +
                   0.20*f.buy_sell_imbalance + 0.15*f.oi_price_agreement +
-                  0.10*max(min((f.close_location-0.5)*2,1),-1) +
-                  0.05*max(min(f.oi_delta*50,1),-1))
+                  0.10*max(min((f.close_location-0.5)*2,1),-1))
         m.direction_bias = scale_signed_to_100(db_raw)
         m.trend_strength = clamp(35*f.efficiency + 25*min(f.range_expansion/1.8,1) +
-                                 20*f.participation + 20*max(f.oi_price_agreement,0) +
-                                 10*f.vol_regime/100)
+                                 20*f.participation + 20*max(f.oi_price_agreement,0))
         m.momentum_score = clamp(30*abs(max(min(f.ret_1*80,1),-1)) +
                                  35*abs(max(min(f.ret_5*25,1),-1)) +
-                                 35*(f.buy_sell_imbalance+1)/2 +
-                                 15*f.acceleration_score)
+                                 35*(f.buy_sell_imbalance+1)/2)
         m.market_structure_score = clamp(40*f.efficiency + 25*(1-f.noise) +
                                          20*max(min((f.close_location-0.5)*2,1),0) +
-                                         15*max(f.oi_price_agreement,0) +
-                                         10*f.order_flow_imbalance)
+                                         15*max(f.oi_price_agreement,0))
         m.acceptance_score = clamp(35*max(min((f.close_location-0.5)*2,1),0) +
                                    25*(1-f.wick_rejection) + 20*f.efficiency +
-                                   20*min(f.range_expansion/1.5,1) +
-                                   15*f.volume_spread_ratio)
+                                   20*min(f.range_expansion/1.5,1))
         m.participation_score = clamp(45*f.participation +
                                       30*min(max(f.volume_zscore,0)/3,1) +
-                                      25*min(abs(f.buy_sell_imbalance),1) +
-                                      10*f.order_flow_imbalance)
+                                      25*min(abs(f.buy_sell_imbalance),1))
         m.continuation_probability = clamp(30*f.efficiency + 20*max(f.oi_price_agreement,0) +
                                            20*f.participation + 15*m.acceptance_score/100 +
-                                           15*f.persistence +
-                                           10*f.vol_regime/100)
+                                           15*f.persistence)
         m.reversal_probability = clamp(30*f.wick_rejection + 25*f.noise +
                                        20*max(0,f.range_expansion-1.3)/0.7 +
-                                       15*(1-f.efficiency) + 10*(1-f.persistence) +
-                                       10*abs(f.funding_rate)*10000)
+                                       15*(1-f.efficiency) + 10*(1-f.persistence))
         m.breakout_probability = clamp(25*m.momentum_score/100 + 20*f.participation +
                                        20*f.compression + 20*f.efficiency + 15*(1-f.noise))
         m.pullback_quality = clamp(35*f.efficiency + 25*m.acceptance_score/100 +
@@ -288,8 +259,7 @@ class MSSIEngine:
                               20*(1-abs(f.close_location-0.5)*2))
         m.risk_score = clamp(30*min(f.range_expansion/2,1) + 25*m.reversal_probability/100 +
                              20*m.noise_score/100 + 15*m.exhaustion_score/100 +
-                             10*(1-m.pullback_quality/100) +
-                             5*abs(f.funding_rate)*10000)
+                             10*(1-m.pullback_quality/100))
         eq_raw = (0.24*m.trend_strength + 0.16*m.momentum_score +
                   0.15*m.market_structure_score + 0.14*m.participation_score +
                   0.14*m.continuation_probability + 0.09*m.pullback_quality -
@@ -297,45 +267,24 @@ class MSSIEngine:
         m.entry_quality = clamp(eq_raw)
         m.sl_percent = max(0.5, min(f.atr_ratio*100*1.5, CFG.max_sl_percent))
         m.tp_percent = max(1.0, min(f.atr_ratio*100*3.0, CFG.max_tp_percent))
-        m.confidence = (
-            m.entry_quality * 0.35 +
-            m.continuation_probability * 0.25 +
-            m.trend_strength * 0.20 +
-            m.participation_score * 0.10 +
-            m.acceptance_score * 0.10
-        )
-        m.final_score = m.confidence
+
         is_bull = direction == TrendDirection.BULLISH
         is_bear = direction == TrendDirection.BEARISH
-        if f.oi_delta != 0 and math.copysign(1, f.ret_1) != math.copysign(1, f.oi_delta):
-            m.decision = "WAIT"
-            m.reasons.append("OI Delta contradicts return")
-            return m
-        if abs(f.funding_rate) > 0.005:
-            m.decision = "WAIT"
-            m.reasons.append(f"Funding stress: {f.funding_rate:.6f}")
-            return m
-        if f.acceleration_score < -0.2:
-            m.decision = "WAIT"
-            m.reasons.append(f"Acceleration negative: {f.acceleration_score:.2f}")
-            return m
-        if f.sr_touches > 3:
-            m.decision = "WAIT"
-            m.reasons.append(f"SR touches high: {f.sr_touches}")
-            return m
-        # ✅ Sweet Spot: سماحية 10% لاحتمالية الانعكاس
-        allowable_reversal = m.continuation_probability + 10.0
-        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
+
+        # ✅ تم إزالة "+ 3" من شرط التوازن
+        if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
-        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
+            m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
+            m.final_score = m.confidence
+        elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
             m.decision = "SELL"
+            m.confidence = m.entry_quality*0.35 + m.continuation_probability*0.25 + m.trend_strength*0.20 + m.participation_score*0.10 + m.acceptance_score*0.10
+            m.final_score = m.confidence
         else:
             m.decision = "WAIT"
-        m.oi_delta = f.oi_delta
-        m.funding_rate = f.funding_rate
-        m.vol_regime = f.vol_regime
-        m.acceleration_score = f.acceleration_score
-        m.sr_touches = f.sr_touches
+            # ✅ لا نصفر الثقة — نحافظ عليها لتحليل أفضل لاحقاً
+            m.final_score = m.confidence  # not 0
+
         m.reasons = [
             f"Regime={regime.value} Dir={direction.value}",
             f"DE={f.efficiency:.3f} Noise={f.noise:.3f} Persist={f.persistence:.2f}",
@@ -344,19 +293,17 @@ class MSSIEngine:
             f"DirBias={m.direction_bias:.1f} Trend={m.trend_strength:.1f} Mom={m.momentum_score:.1f}",
             f"Entry={m.entry_quality:.1f} Cont={m.continuation_probability:.1f} Rev={m.reversal_probability:.1f}",
             f"Exh={m.exhaustion_score:.1f} Risk={m.risk_score:.1f} PB={m.pullback_quality:.1f}",
-            f"OI_Delta={m.oi_delta:.3f} Funding={m.funding_rate:.6f} Accel={m.acceleration_score:.2f} SR={m.sr_touches}",
-            f"CONF={m.confidence:.1f}"
         ]
         return m
 
-    def analyze(self, data_1h, data_1d=None, oi_1h=None, funding_1h=None) -> Optional[MSSIOutput]:
-        f = self.extract(data_1h, oi_1h, funding_1h)
+    def analyze(self, data_1h, data_1d=None) -> Optional[MSSIOutput]:
+        f = self.extract(data_1h)
         if not f: return None
         direction = self.infer_direction(f)
         regime = self.detect_regime(f, direction)
         m = self.score(f, regime, direction)
         if data_1d and len(data_1d) >= 30:
-            fd = self.extract(data_1d, oi_1h, funding_1h)
+            fd = self.extract(data_1d)
             if fd:
                 dd = self.infer_direction(fd)
                 rd = self.detect_regime(fd, dd)
@@ -367,24 +314,18 @@ class MSSIEngine:
                 m.continuation_probability = m.continuation_probability*0.7 + md.continuation_probability*0.3
                 m.reversal_probability = m.reversal_probability*0.7 + md.reversal_probability*0.3
                 m.risk_score = m.risk_score*0.7 + md.risk_score*0.3
-                m.confidence = (
-                    m.entry_quality * 0.35 +
-                    m.continuation_probability * 0.25 +
-                    m.trend_strength * 0.20 +
-                    m.participation_score * 0.10 +
-                    m.acceptance_score * 0.10
-                )
+                m.confidence = m.confidence*0.7 + md.confidence*0.3
                 m.final_score = m.confidence
                 is_bull = m.direction_bias > 50
                 is_bear = m.direction_bias < 50
-                # ✅ Sweet Spot: نفس السماحية بعد الدمج
-                allowable_reversal = m.continuation_probability + 10.0
-                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
+                # ✅ نفس التعديل: إزالة "+ 3"
+                if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias >= CFG.min_long_score:
                     m.decision = "BUY"
-                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and allowable_reversal > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
+                elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability > m.reversal_probability and m.direction_bias <= (100 - CFG.min_short_score):
                     m.decision = "SELL"
                 else:
                     m.decision = "WAIT"
+                    m.final_score = m.confidence  # ✅ لا نصفر
         return m
 
 mssi_engine = MSSIEngine()
@@ -402,24 +343,20 @@ class TradeDB:
                 entry_order_id TEXT, confidence REAL, reason TEXT, timestamp TEXT,
                 status TEXT DEFAULT 'OPEN', exit_price REAL, realized_pnl REAL,
                 pnl_percent REAL, commission REAL DEFAULT 0, closed_at TEXT,
-                close_reason TEXT, ai_explanation TEXT, final_score REAL, regime TEXT,
-                oi_delta REAL, funding_rate REAL, vol_regime REAL, acceleration REAL,
-                partial_closes INTEGER DEFAULT 0)""")
+                close_reason TEXT, ai_explanation TEXT, final_score REAL, regime TEXT)""")
             self.conn.commit()
     def insert_trade(self, **kw):
         with self.lock:
             cur = self.conn.execute(
                 "INSERT INTO trades (symbol,side,mode,entry_price,quantity,sl_price,tp_price,"
                 "sl_order_id,tp_order_id,entry_order_id,confidence,reason,timestamp,status,"
-                "ai_explanation,final_score,regime,oi_delta,funding_rate,vol_regime,acceleration) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "ai_explanation,final_score,regime) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (kw.get("symbol"),kw.get("side"),kw.get("mode"),kw.get("entry_price"),
                  kw.get("quantity"),kw.get("sl_price"),kw.get("tp_price"),
                  kw.get("sl_order_id",""),kw.get("tp_order_id",""),kw.get("entry_order_id",""),
                  kw.get("confidence",0),kw.get("reason",""),kw.get("timestamp",""),
                  kw.get("status","OPEN"),kw.get("ai_explanation",""),kw.get("final_score",0),
-                 kw.get("regime",""),kw.get("oi_delta",0),kw.get("funding_rate",0),
-                 kw.get("vol_regime",0),kw.get("acceleration",0)))
+                 kw.get("regime","")))
             self.conn.commit(); return cur.lastrowid
     def close_trade(self, tid, ep, rpnl, pp, comm, reason):
         with self.lock:
@@ -441,72 +378,18 @@ class TradeDB:
         with self.lock:
             r = self.conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()
         return r[0] if r else 0
-    def cleanup_stale_positions(self):
-        logger.info("🔍 Cleaning stale OPEN positions...")
-        open_trades = self.get_open_trades()
-        cleaned = 0
-        for t in open_trades:
-            sym = t["symbol"]
-            try:
-                pos = exchange.fetch_positions([sym])
-                found = any(
-                    p.get("contracts") and float(p.get("contracts",0)) > 0
-                    for p in pos
-                )
-                if not found:
-                    logger.warning(f"❌ Stale trade #{t['id']} ({sym}) — no position on exchange. Marking as CLOSED.")
-                    self.close_trade(t["id"],ep=t.get("entry_price",0),rpnl=0.0,pp=0.0,comm=0.0,reason="STALE_POSITION_CLEANUP")
-                    cleaned += 1
-            except Exception as e:
-                logger.error(f"⚠️ Failed to check {sym}: {e}")
-        if cleaned:
-            logger.info(f"✅ Cleaned {cleaned} stale positions.")
-        else:
-            logger.info("✅ No stale positions found.")
-    def update_trade_targets(self, tid, new_sl, new_tp, new_sl_id, new_tp_id, note=""):
-        with self.lock:
-            if note:
-                self.conn.execute("""
-                    UPDATE trades 
-                    SET sl_price=?, tp_price=?, sl_order_id=?, tp_order_id=?, reason = reason || ? 
-                    WHERE id=?
-                """, (new_sl, new_tp, new_sl_id, new_tp_id, f" | {note}", tid))
-            else:
-                self.conn.execute("""
-                    UPDATE trades 
-                    SET sl_price=?, tp_price=?, sl_order_id=?, tp_order_id=? 
-                    WHERE id=?
-                """, (new_sl, new_tp, new_sl_id, new_tp_id, tid))
-            self.conn.commit()
-    def update_partial_close(self, tid, new_qty, note):
-        with self.lock:
-            self.conn.execute("""
-                UPDATE trades 
-                SET quantity=?, reason = reason || ?
-                WHERE id=?
-            """, (new_qty, f" | {note}", tid))
-            self.conn.commit()
-    def increment_partial_closes(self, tid):
-        with self.lock:
-            self.conn.execute("""
-                UPDATE trades 
-                SET partial_closes = partial_closes + 1
-                WHERE id=?
-            """, (tid,))
-            self.conn.commit()
-
 
 db = TradeDB(CFG.db_path)
 
 app = Flask(__name__)
-bot_stats = {"status":"STARTING","version":"MSSI-V2","uptime":0,"trades_today":0,
+bot_stats = {"status":"STARTING","version":"MSSI-V1","uptime":0,"trades_today":0,
              "open_positions":0,"scanner":[],"last_analysis":{},
              "mode":"LIVE","current_ip":"","deploy_ip":""}
 T0 = time.time()
 
 @app.route("/")
 def home():
-    return (f"<h2>MSSI V2 TRADING BOT</h2>"
+    return (f"<h2>MSSI TRADING BOT</h2>"
             f"<p>IP: <b>{bot_stats['current_ip']}</b></p>"
             f"<p>Trades: {bot_stats['trades_today']} | Open: {bot_stats['open_positions']}</p>")
 @app.route("/health")
@@ -604,11 +487,6 @@ Reversal: {mssi.reversal_probability:.1f}/100
 Exhaustion: {mssi.exhaustion_score:.1f}/100
 Risk: {mssi.risk_score:.1f}/100
 Noise: {mssi.noise_score:.1f}/100
-OI Delta: {mssi.oi_delta:.3f}
-Funding Rate: {mssi.funding_rate:.6f}
-Vol Regime: {mssi.vol_regime:.1f}
-Acceleration: {mssi.acceleration_score:.2f}
-SR Touches: {mssi.sr_touches}
 
 القواعد:
 1. إذا ترى خطر حقيقي لا يراه MSSI: اعترض (WAIT)
@@ -643,48 +521,12 @@ SR Touches: {mssi.sr_touches}
             result.explanation=f"AI_ERROR: {str(e)[:100]}"
         return result
 
-    def evaluate_open_trade(self, symbol, pnl_pct, elapsed_hours, current_mssi) -> dict:
-        if not CFG.use_ai_explainer: return {"action": "HOLD"}
-        prompt = f"""أنت مدير محافظ كمّي. لدينا صفقة مفتوحة حالياً.
-العملة: {symbol}
-الربح/الخسارة الحالي: {pnl_pct:.2f}%
-مدة الصفقة حتى الآن: {elapsed_hours:.1f} ساعة
-وضع السوق الحالي (Regime): {current_mssi.regime}
-قوة الترند: {current_mssi.trend_strength:.1f}/100
-احتمالية الانعكاس (Reversal Prob): {current_mssi.reversal_probability:.1f}/100
-لمسات الدعم/المقاومة: {current_mssi.sr_touches}
-
-بناءً على المعطيات الفنية، اختر إجراءً واحداً فقط:
-- "HOLD": إبقاء الصفقة (السوق لا يزال جيداً).
-- "CLOSE_ALL": إغلاق كامل (خطر انعكاس حقيقي أو اكتفاء بالربح).
-- "CLOSE_HALF": جني ربح جزئي 50% (إذا كان الربح جيداً وهناك مقاومة، لكن فرصة الصعود قائمة).
-
-أجب بصيغة JSON فقط:
-{{"action": "HOLD أو CLOSE_ALL أو CLOSE_HALF", "reason": "شرح قصير جدًا"}}"""
-        for attempt in range(3):
-            try:
-                comp = ai_client.chat.completions.create(
-                    model=CFG.ai_model,
-                    messages=[{"role":"system","content":"/think"},{"role":"user","content":prompt}],
-                    temperature=0.3, max_tokens=200, stream=False)
-                cleaned = comp.choices[0].message.content.strip()
-                js = cleaned.find("{"); je = cleaned.rfind("}") + 1
-                if js >= 0 and je > js: cleaned = cleaned[js:je]
-                decision = json.loads(cleaned)
-                action = decision.get("action", "HOLD").upper()
-                if action not in ["HOLD", "CLOSE_ALL", "CLOSE_HALF"]: action = "HOLD"
-                logger.info(f"🧠 AI Trade Manager [{symbol}]: {action} | {decision.get('reason','')}")
-                return {"action": action, "reason": decision.get("reason", "")}
-            except Exception as e:
-                time.sleep(2)
-        return {"action": "HOLD"}
-
 ai_analyst = AIAnalyst()
 
 
 class MarketScanner:
     def __init__(self): self._run=True
-    def start(self): threading.Thread(target=self._loop,daemon=True).start(); logger.info("Scanner MSSI V2")
+    def start(self): threading.Thread(target=self._loop,daemon=True).start(); logger.info("Scanner MSSI")
     def stop(self): self._run=False
     def _loop(self):
         time.sleep(5)
@@ -741,13 +583,7 @@ class MarketScanner:
         if cm.count(sk,"1h")<50: self._load(sk,sym)
         d1h=cm.get(sk,"1h"); d1d=cm.get(sk,"1d")
         if len(d1h)<50: logger.info(f"Not enough: {sym}"); return
-        oi_1h = None
-        funding_1h = None
-        try:
-            oi_1h = exchange.fetch_open_interest(sym)
-            funding_1h = exchange.fetch_funding_rate(sym)
-        except: pass
-        mssi = mssi_engine.analyze(d1h, d1d if len(d1d)>=30 else None, oi_1h, funding_1h)
+        mssi = mssi_engine.analyze(d1h, d1d if len(d1d)>=30 else None)
         if not mssi: logger.info(f"MSSI fail: {sym}"); return
         logger.info(f">>> MSSI {sym}: {mssi.decision} | Regime={mssi.regime} | Dir={mssi.direction}")
         for r in mssi.reasons: logger.info(f"   {r}")
@@ -758,16 +594,14 @@ class MarketScanner:
         final.mssi_score = mssi.confidence; final.ai_score = ai.confidence
         final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
         if mssi.decision == "WAIT":
-            final.decision = Decision.WAIT
-            final.final_score = mssi.confidence
-            final.reasons = [f"MSSI WAIT | Conf={mssi.confidence:.1f}"] + mssi.reasons
+            final.decision = Decision.WAIT; final.final_score = mssi.confidence  # ✅ لا نصفر
+            final.reasons = [f"MSSI WAIT | Regime={mssi.regime}"] + mssi.reasons
         elif ai.error:
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
-            final.final_score = mssi.confidence
-            final.reasons = [f"MSSI {mssi.decision} (AI_ERROR)"] + mssi.reasons
+            final.final_score = mssi.confidence * CFG.mssi_weight
+            final.reasons = [f"MSSI {mssi.decision} (AI_ERROR) | Conf={mssi.confidence:.1f}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision == "WAIT" and ai.confidence >= 75:
-            final.decision = Decision.WAIT
-            final.final_score = mssi.confidence
+            final.decision = Decision.WAIT; final.final_score = mssi.confidence  # ✅ لا نصفر
             final.reasons = [f"AI VETO (conf={ai.confidence}) | MSSI was {mssi.decision}"] + mssi.reasons
         elif CFG.use_ai_veto and ai.decision != mssi.decision and ai.decision != "WAIT" and ai.confidence >= 70:
             final.final_score = mssi.confidence * CFG.mssi_weight * 0.7
@@ -780,17 +614,15 @@ class MarketScanner:
         else:
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
             final.final_score = mssi.confidence * CFG.mssi_weight + ai.confidence * CFG.ai_weight
-            final.reasons = [f"MSSI {mssi.decision} | Score={final.final_score:.1f}"] + mssi.reasons
-        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | Conf(MSSI)={mssi.confidence:.1f}")
-        if final.decision == Decision.WAIT:
-            return
-        if final.final_score < CFG.min_confidence:
-            logger.info(f"🚫 {sym} رُفضت: الثقة ضعيفة ({final.final_score:.1f} < {CFG.min_confidence})")
-            return
+            final.reasons = [f"MSSI {mssi.decision} | Score={final.final_score:.1f} | AI={ai.decision}({ai.confidence})"] + mssi.reasons
+        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | {final.reasons[0] if final.reasons else ''}")
         bot_stats["last_analysis"][sym]={"decision":final.decision.value,"final_score":round(final.final_score,1),
             "regime":mssi.regime,"ai":f"{ai.decision}({ai.confidence}){'[ERR]' if ai.error else ''}",
             "time":datetime.now(timezone.utc).isoformat()}
-        execute_trade(sym, final, mssi)
+        if final.decision==Decision.WAIT: return
+        if final.final_score<CFG.min_confidence:
+            logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}"); return
+        execute_trade(sym, final)
     def _load(self,sk,sym):
         for tf in CFG.timeframes:
             try:
@@ -809,18 +641,42 @@ def get_pos(sym):
         return None
     except Exception as e: logger.error(f"Pos {sym}: {e}"); return "ERROR"
 
-def emergency_close(sym,reason):
-    logger.critical(f"EMERGENCY: {sym} | {reason}")
-    try:
-        pos=get_pos(sym)
-        if pos and pos!="ERROR":
-            ct=float(pos.get("contracts",0)); side=pos.get("side","")
-            if ct>0:
-                cs="sell" if side=="long" else "buy"
-                exchange.create_market_order(sym,cs,ct,params={"reduceOnly":True})
-    except Exception as e: logger.critical(f"Emergency fail: {e}")
+# ✅ التعديل 1: emergency_close مع حذف الأوامر المعلقة أولاً
+def emergency_close(sym, reason):
+    logger.critical(f"EMERGENCY CLOSE: {sym} | {reason}")
+    
+    # 1. جلب الصفقة من قاعدة البيانات لمعرفة أرقام طلبات SL و TP الخاصة بها فقط
+    trade_to_close = None
+    for t in db.get_open_trades():
+        if t["symbol"] == sym:
+            trade_to_close = t
+            break
 
-def execute_trade(sym, final, mssi):
+    # 2. حذف الطلبات المحددة الخاصة بهذه الصفقة فقط
+    if trade_to_close:
+        for oid in [trade_to_close.get("sl_order_id"), trade_to_close.get("tp_order_id")]:
+            if oid:
+                try:
+                    exchange.cancel_order(oid, sym)
+                    logger.info(f"🧹 تم حذف الطلب المرتبط بالصفقة: {oid}")
+                except Exception as e:
+                    if "Unknown order" not in str(e) and "Order does not exist" not in str(e):
+                        logger.warning(f"⚠️ فشل حذف الطلب {oid}: {e}")
+
+    # 3. إغلاق الكمية المفتوحة بسعر السوق
+    try:
+        pos = get_pos(sym)
+        if pos and pos != "ERROR":
+            ct = float(pos.get("contracts", 0))
+            side = pos.get("side", "")
+            if ct > 0:
+                cs = "sell" if side == "long" else "buy"
+                exchange.create_market_order(sym, cs, ct, params={"reduceOnly": True})
+                logger.info(f"✅ تم إغلاق صفقة {sym} بالكامل.")
+    except Exception as e:
+        logger.critical(f"❌ فشل إغلاق الصفقة (Emergency fail): {e}")
+
+def execute_trade(sym, final):
     with execution_lock:
         try:
             pos=get_pos(sym)
@@ -874,9 +730,7 @@ def execute_trade(sym, final, mssi):
                 confidence=final.final_score,
                 reason=f"MSSI={final.mssi_score:.0f} AI={final.ai_score:.0f} Final={final.final_score:.1f} | {final.ai_explanation[:100]}",
                 timestamp=datetime.now(timezone.utc).isoformat(),
-                ai_explanation=final.ai_explanation, final_score=final.final_score, regime=final.regime,
-                oi_delta=mssi.oi_delta, funding_rate=mssi.funding_rate,
-                vol_regime=mssi.vol_regime, acceleration=mssi.acceleration_score)
+                ai_explanation=final.ai_explanation, final_score=final.final_score, regime=final.regime)
             logger.info(f"Trade #{tid}"); st["t"]=time.time()
         except Exception as e:
             logger.error(f"Exec: {e}",exc_info=True); emergency_close(sym,str(e))
@@ -884,7 +738,7 @@ def execute_trade(sym, final, mssi):
 
 class PositionMonitor:
     def __init__(self): self._run=True
-    def start(self): threading.Thread(target=self._loop,daemon=True).start(); logger.info("Monitor V2")
+    def start(self): threading.Thread(target=self._loop,daemon=True).start(); logger.info("Monitor")
     def stop(self): self._run=False
     def _loop(self):
         while self._run:
@@ -894,15 +748,11 @@ class PositionMonitor:
             time.sleep(CFG.monitor_interval)
     def _check(self,trade):
         sym=trade["symbol"]
-        sk=next((k for k, v in CFG.watchlist.items() if v == sym), None)
         sl_st=self._ost(sym,trade.get("sl_order_id")); tp_st=self._ost(sym,trade.get("tp_order_id"))
         pos=get_pos(sym)
         if pos=="ERROR": return
         if pos is None:
-            st=trade_state.get(sym,{})
-            smart_reason=st.pop("custom_close_reason",None)
-            st.pop("invalidation_count",None)
-            reason=smart_reason or ("STOP_LOSS" if sl_st=="closed" else "TAKE_PROFIT" if tp_st=="closed" else "MANUAL")
+            reason="STOP_LOSS" if sl_st=="closed" else "TAKE_PROFIT" if tp_st=="closed" else "MANUAL"
             ep,rpnl,comm=self._rexit(sym,trade); entry=trade["entry_price"]; qty=trade["quantity"]
             if ep==0: ep=entry
             if rpnl==0:
@@ -912,16 +762,6 @@ class PositionMonitor:
             db.close_trade(trade["id"],ep,rpnl,pp,comm,reason)
             logger.info(f"CLOSED {sym} | {reason} | PnL={rpnl:.4f} ({pp:.2f}%)")
             self._cancel(sym,trade)
-            return
-        try:
-            current_price = 0
-            if sk:
-                d1m = cm.get(sk, "1m")
-                if d1m: current_price = float(d1m[-1][4])
-            if current_price > 0:
-                self._manage_smart_trade(sym, trade, current_price, sk)
-        except Exception as e:
-            pass
     def _csz(self,sym):
         try: return float(exchange.market(sym).get("contractSize",1) or 1)
         except: return 1.0
@@ -942,120 +782,30 @@ class PositionMonitor:
             try: ep=exchange_public.fetch_ticker(sym)["last"]
             except: pass
         return ep,rpnl,comm
+    # ✅ التعديل 2: _cancel مع تتبع الأخطاء والتنظيف الجراحي
     def _cancel(self, sym, trade):
-        for oid in [trade.get("sl_order_id"), trade.get("tp_order_id")]:
-            if not oid: continue
+        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")
+        
+        # استخراج أرقام الطلبات من قاعدة بيانات البوت (SL و TP)
+        orders_to_cancel = [
+            ("SL", trade.get("sl_order_id")), 
+            ("TP", trade.get("tp_order_id"))
+        ]
+        
+        for order_type, oid in orders_to_cancel:
+            if not oid: 
+                continue
+                
             try:
+                # حذف الطلب المحدد فقط
                 exchange.cancel_order(oid, sym)
-            except:
-                pass
-        try:
-            exchange.cancel_all_orders(sym)
-        except Exception as e:
-            pass
-    def _update_binance_orders(self, sym, trade, new_sl, new_tp, note=""):
-        self._cancel(sym, trade)
-        qty = float(trade["quantity"])
-        cs = "sell" if trade["side"] == "LONG" else "buy"
-        new_sl_id, new_tp_id = "", ""
-        try:
-            new_sl_price = float(exchange.price_to_precision(sym, new_sl))
-            slo = exchange.create_order(sym, "STOP_MARKET", cs, qty, None,
-                        {"stopPrice": new_sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
-            new_sl_id = slo.get("id", "")
-        except Exception as e:
-            logger.error(f"SL update fail for {sym}: {e}")
-        try:
-            new_tp_price = float(exchange.price_to_precision(sym, new_tp))
-            tpo = exchange.create_order(sym, "TAKE_PROFIT_MARKET", cs, qty, None,
-                        {"stopPrice": new_tp_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
-            new_tp_id = tpo.get("id", "")
-        except Exception as e:
-            logger.error(f"TP update fail for {sym}: {e}")
-        if new_sl_id or new_tp_id:
-            db.update_trade_targets(trade["id"], new_sl_price, new_tp_price, new_sl_id, new_tp_id, note)
-            trade["sl_price"] = new_sl_price
-            trade["tp_price"] = new_tp_price
-            trade["sl_order_id"] = new_sl_id
-            trade["tp_order_id"] = new_tp_id
-    def _manage_smart_trade(self, sym, trade, current_price, sk):
-        try:
-            d1h = cm.get(sk, "1h")
-            if len(d1h) < 50: return 
-            current_features = mssi_engine.extract(d1h)
-            if not current_features: return
-            entry = float(trade["entry_price"])
-            side = trade["side"]
-            sl_price = float(trade["sl_price"])
-            atr_value = current_features.atr_ratio * entry 
-            pnl_distance = (current_price - entry) if side == "LONG" else (entry - current_price)
-            pnl_pct = (pnl_distance / entry) * 100
-            if pnl_distance >= atr_value:
-                new_sl = entry * 1.002 if side == "LONG" else entry * 0.998
-                should_update = (side == "LONG" and sl_price < new_sl) or (side == "SHORT" and sl_price > new_sl)
-                if should_update:
-                    logger.info(f"🛡️ {sym} | السعر تحرك +1 ATR. تم تأمين الصفقة (Breakeven).")
-                    self._update_binance_orders(sym, trade, new_sl, float(trade["tp_price"]), note="BREAKEVEN_ATR")
-            current_mssi = mssi_engine.analyze(d1h)
-            st = trade_state.setdefault(sym, {})
-            if current_mssi:
-                is_invalidated = False
-                if side == "LONG" and (current_mssi.decision == "SELL" or current_mssi.reversal_probability > 75):
-                    is_invalidated = True
-                elif side == "SHORT" and (current_mssi.decision == "BUY" or current_mssi.reversal_probability > 75):
-                    is_invalidated = True
-                if is_invalidated:
-                    st["invalidation_count"] = st.get("invalidation_count", 0) + 1
-                    logger.warning(f"⚠️ {sym} | تحذير انعكاس ({st['invalidation_count']}/3)")
-                    if st["invalidation_count"] >= 3:
-                        logger.warning(f"🚨 {sym} | تأكيد انتفاء سبب الدخول لثلاث دورات! إغلاق مبكر.")
-                        st["custom_close_reason"] = "SMART_INVALIDATION_EXIT"
-                        emergency_close(sym, "SMART_INVALIDATION_EXIT")
-                        return
+                logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
+            except Exception as e:
+                # إذا ظهر هذا الخطأ يعني أن الطلب تنفذ (ضرب الهدف/الوقف) أو تم حذفه مسبقاً
+                if "-2011" in str(e) or "Unknown order" in str(e) or "Order does not exist" in str(e):
+                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")
                 else:
-                    if st.get("invalidation_count", 0) > 0:
-                        st["invalidation_count"] = 0
-                if pnl_distance > 0 and pnl_pct >= 1.3:
-                    logger.info(f"💰 {sym} | السعر وصل للهدف الذهبي (+{pnl_pct:.2f}%). جني أرباح فوري!")
-                    st["custom_close_reason"] = "SMART_FAST_TAKE_PROFIT"
-                    emergency_close(sym, "SMART_FAST_TAKE_PROFIT")
-                    return
-                trade_time_str = trade["timestamp"].replace("Z", "+00:00")
-                elapsed_hours = (datetime.now(timezone.utc) - datetime.fromisoformat(trade_time_str)).total_seconds() / 3600.0
-                if elapsed_hours > 1.0 or pnl_pct > 0.5:
-                    last_ai_eval = st.get("last_ai_eval_time", 0)
-                    if time.time() - last_ai_eval > 900:
-                        ai_eval = ai_analyst.evaluate_open_trade(sym, pnl_pct, elapsed_hours, current_mssi)
-                        st["last_ai_eval_time"] = time.time()
-                        ai_action = ai_eval["action"]
-                        if ai_action == "CLOSE_ALL":
-                            logger.info(f"🎯 الذكاء الاصطناعي يقرر الإغلاق الكامل لـ {sym}: {ai_eval['reason']}")
-                            st["custom_close_reason"] = "AI_CLOSE_ALL"
-                            emergency_close(sym, "AI_CLOSE_ALL")
-                            return
-                        elif ai_action == "CLOSE_HALF":
-                            if not st.get("half_closed", False):
-                                self._partial_close(sym, trade, 0.5)
-                                st["half_closed"] = True
-        except Exception as e:
-            logger.error(f"Error managing smart trade {sym}: {e}")
-    def _partial_close(self, sym, trade, close_pct):
-        try:
-            qty = float(trade["quantity"])
-            close_qty = qty * close_pct
-            remaining_qty = qty - close_qty
-            if remaining_qty < 0.01:
-                logger.info(f"Closing entire position for {sym} due to small remainder.")
-                emergency_close(sym, "PARTIAL_TO_FULL_CLOSE")
-                return
-            cs = "sell" if trade["side"] == "LONG" else "buy"
-            order = exchange.create_market_order(sym, cs, close_qty, params={"reduceOnly":True})
-            logger.info(f"Partial close executed: {sym} | {close_pct*100:.0f}% | Qty: {close_qty}")
-            db.update_partial_close(trade["id"], remaining_qty, f"PARTIAL_CLOSE({close_pct*100:.0f}%)")
-            trade["quantity"] = remaining_qty
-            db.increment_partial_closes(trade["id"])
-        except Exception as e:
-            logger.error(f"Partial close failed for {sym}: {e}")
+                    logger.error(f"⚠️ خطأ غير متوقع أثناء حذف طلب {order_type}: {e}")
 
 
 async def ws_worker():
@@ -1083,23 +833,19 @@ async def ws_worker():
 def main():
     ip = show_deploy_ip()
     logger.info("="*60)
-    logger.info("MSSI V2 TRADING BOT — LIVE (Sweet Spot)")
+    logger.info("MSSI TRADING BOT — LIVE (Opportunity Mode)")
     logger.info(f"   IP: {ip}")
     logger.info(f"   Scanner every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
     logger.info(f"   Min Entry Quality: {CFG.min_entry_quality} | Min Confidence: {CFG.min_confidence}")
     logger.info(f"   Max Risk: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Leverage: x{CFG.leverage} | Margin: {CFG.margin_usdt} USDT")
-    logger.info(f"   DirBias Long>={CFG.min_long_score} Short<={100-CFG.min_short_score} | Reversal Tolerance: +10")
     logger.info("="*60)
-
-    db.cleanup_stale_positions()
     ip_monitor.start()
     threading.Thread(target=run_server,daemon=True).start(); time.sleep(2)
     try:
         t=exchange_public.fetch_ticker("BTC/USDT:USDT")
         logger.info(f"Binance OK | BTC: {t['last']}")
     except Exception as e: logger.critical(f"Binance: {e}"); return
-
     logger.info("Loading data...")
     for sk,sym in CFG.watchlist.items():
         cm.ensure(sk,CFG.timeframes)
@@ -1111,11 +857,9 @@ def main():
             except: pass
             time.sleep(0.2)
     logger.info("Data ready")
-
     monitor=PositionMonitor(); monitor.start()
     scanner=MarketScanner(); scanner.start()
     bot_stats["status"]="RUNNING"
-
     try: asyncio.run(ws_worker())
     except KeyboardInterrupt: logger.info("Shutdown"); scanner.stop(); monitor.stop(); ip_monitor.stop()
 
