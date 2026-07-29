@@ -59,7 +59,8 @@ class Config:
     ws_reconnect_delay: int = 10
     candle_maxlen: int = 500
     flask_port: int = 8080
-    watchlist: Dict[str, str] = field(default_factory=lambda: {
+        watchlist: Dict[str, str] = field(default_factory=lambda: {
+        # القائمة القديمة
         "btcusdt":"BTC/USDT:USDT","ethusdt":"ETH/USDT:USDT",
         "solusdt":"SOL/USDT:USDT","bnbusdt":"BNB/USDT:USDT",
         "xrpusdt":"XRP/USDT:USDT","adausdt":"ADA/USDT:USDT",
@@ -70,7 +71,20 @@ class Config:
         "arbusdt":"ARB/USDT:USDT","dotusdt":"DOT/USDT:USDT",
         "maticusdt":"MATIC/USDT:USDT","ltcusdt":"LTC/USDT:USDT",
         "aptusdt":"APT/USDT:USDT","opustdt":"OP/USDT:USDT",
+        
+        # 🔥 العملات الجديدة المضافة (السيولة والتقلب العالي)
+        "injusdt":"INJ/USDT:USDT",     # Injective
+        "tiausdt":"TIA/USDT:USDT",     # Celestia
+        "seiusdt":"SEI/USDT:USDT",     # Sei
+        "ftmusdt":"FTM/USDT:USDT",     # Fantom
+        "fetusdt":"FET/USDT:USDT",     # Artificial Superintelligence Alliance
+        "galausdt":"GALA/USDT:USDT",   # Gala Games
+        "rndrusdt":"RNDR/USDT:USDT",   # Render
+        "tonusdt":"TON/USDT:USDT",     # Toncoin
+        "bchusdt":"BCH/USDT:USDT",     # Bitcoin Cash
+        "trxusdt":"TRX/USDT:USDT"      # Tron
     })
+
     timeframes: List[str] = field(default_factory=lambda: ["1m","1h","1d"])
     db_path: str = "trades_v2.db"
 
