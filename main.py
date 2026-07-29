@@ -3,6 +3,7 @@
   MSSI V2 TRADING BOT — Market State & Signal Intelligence
   MSSI = 85% decision | AI = 15% veto/filter
   Includes: OI, Funding, Vol Regime, Order Flow, SR Touches, Acceleration
+  Enhanced: AI Trade Management after entry
 """
 
 import asyncio, json, time, threading, math, os, sqlite3, logging
@@ -32,8 +33,8 @@ class Config:
     nvidia_api_key: str = "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"
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
     dry_run: bool = False
-    leverage: int = 15
-    margin_usdt: float = 30.0
+    leverage: int = 10
+    margin_usdt: float = 40.0
     max_daily_trades: int = 8
     max_open_positions: int = 2
     cooldown_seconds: int = 180
@@ -423,7 +424,8 @@ class TradeDB:
                 status TEXT DEFAULT 'OPEN', exit_price REAL, realized_pnl REAL,
                 pnl_percent REAL, commission REAL DEFAULT 0, closed_at TEXT,
                 close_reason TEXT, ai_explanation TEXT, final_score REAL, regime TEXT,
-                oi_delta REAL, funding_rate REAL, vol_regime REAL, acceleration REAL)""")
+                oi_delta REAL, funding_rate REAL, vol_regime REAL, acceleration REAL,
+                partial_closes INTEGER DEFAULT 0)""")  # ✅ AI Trade Management: track partial closes
             self.conn.commit()
     def insert_trade(self, **kw):
         with self.lock:
@@ -431,7 +433,7 @@ class TradeDB:
                 "INSERT INTO trades (symbol,side,mode,entry_price,quantity,sl_price,tp_price,"
                 "sl_order_id,tp_order_id,entry_order_id,confidence,reason,timestamp,status,"
                 "ai_explanation,final_score,regime,oi_delta,funding_rate,vol_regime,acceleration) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (kw.get("symbol"),kw.get("side"),kw.get("mode"),kw.get("entry_price"),
                  kw.get("quantity"),kw.get("sl_price"),kw.get("tp_price"),
                  kw.get("sl_order_id",""),kw.get("tp_order_id",""),kw.get("entry_order_id",""),
@@ -505,6 +507,24 @@ class TradeDB:
                     SET sl_price=?, tp_price=?, sl_order_id=?, tp_order_id=? 
                     WHERE id=?
                 """, (new_sl, new_tp, new_sl_id, new_tp_id, tid))
+            self.conn.commit()
+    # ✅ AI Trade Management: دالة جزئية
+    def update_partial_close(self, tid, new_qty, note):
+        with self.lock:
+            self.conn.execute("""
+                UPDATE trades 
+                SET quantity=?, reason = reason || ?
+                WHERE id=?
+            """, (new_qty, f" | {note}", tid))
+            self.conn.commit()
+    # ✅ AI Trade Management: تعديل في الحقل
+    def increment_partial_closes(self, tid):
+        with self.lock:
+            self.conn.execute("""
+                UPDATE trades 
+                SET partial_closes = partial_closes + 1
+                WHERE id=?
+            """, (tid,))
             self.conn.commit()
 
 
@@ -939,7 +959,7 @@ class PositionMonitor:
             try:
                 if self._ost(sym,oid)=="open": exchange.cancel_order(oid,sym)
             except: pass
-    # ✅ V2: دالة تحديث الأهداف في DB
+    # ✅ V2: دالة تحديث الأهداف
     def _update_binance_orders(self, sym, trade, new_sl, new_tp, note=""):
         self._cancel(sym, trade)
         qty = float(trade["quantity"])
@@ -999,14 +1019,34 @@ class PositionMonitor:
                     logger.warning(f"⚠️ {sym} | تحذير انعكاس ({st['invalidation_count']}/3)")
                     if st["invalidation_count"] >= 3:
                         logger.warning(f"🚨 {sym} | تأكيد انتفاء سبب الدخول لثلاث دورات! إغلاق مبكر.")
-                        st["custom_close_reason"] = "SMART_INVALIDATION_EXIT" # حفظ السبب لتسجيله في DB عند الإغلاق
+                        st["custom_close_reason"] = "SMART_INVALIDATION_EXIT" # حفظ السبب لتسجيله في DB
                         emergency_close(sym, "SMART_INVALIDATION_EXIT")
                 else:
-                    # إعادة التصفير إذا اختفت الإشارة المعاكسة (كانت مجرد ذيل شمعة كاذب)
+                    # إعادة التصفير إذا اختفت الإشارة المعاكسة
                     if st.get("invalidation_count", 0) > 0:
                         st["invalidation_count"] = 0
         except Exception as e:
             logger.error(f"Error managing smart trade {sym}: {e}")
+    # ✅ AI Trade Management: دالة جزئية
+    def _partial_close(self, sym, trade, close_pct):
+        try:
+            qty = float(trade["quantity"])
+            close_qty = qty * close_pct
+            remaining_qty = qty - close_qty
+            if remaining_qty < 0.01:  # لا تترك كسر صغير
+                logger.info(f"Closing entire position for {sym} due to small remainder.")
+                emergency_close(sym, "PARTIAL_TO_FULL_CLOSE")
+                return
+            cs = "sell" if trade["side"] == "LONG" else "buy"
+            # بيع جزء من الكمية
+            order = exchange.create_market_order(sym, cs, close_qty, params={"reduceOnly":True})
+            logger.info(f"Partial close executed: {sym} | {close_pct*100:.0f}% | Qty: {close_qty}")
+            # تحديث الكمية في DB
+            db.update_partial_close(trade["id"], remaining_qty, f"PARTIAL_CLOSE({close_pct*100:.0f}%)")
+            trade["quantity"] = remaining_qty
+            db.increment_partial_closes(trade["id"])
+        except Exception as e:
+            logger.error(f"Partial close failed for {sym}: {e}")
 
 
 async def ws_worker():
