@@ -33,8 +33,8 @@ class Config:
     nvidia_api_key: str = "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"
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
     dry_run: bool = False
-    leverage: int = 10
-    margin_usdt: float = 40.0
+    leverage: int = 15
+    margin_usdt: float = 30.0
     max_daily_trades: int = 8
     max_open_positions: int = 2
     cooldown_seconds: int = 180
@@ -42,11 +42,11 @@ class Config:
     max_tp_percent: float = 10.0
     mssi_weight: float = 0.85
     ai_weight: float = 0.15
-    min_long_score: float = 55.0      # ✅ خُفّض
-    min_short_score: float = 45.0    # ✅ رُفع
-    max_risk_for_entry: float = 85.0 # ✅ رُفع
-    min_entry_quality: float = 25.0  # ✅ خُفّض
-    min_confidence: float = 28.0     # ✅ خُفّض
+    min_long_score: float = 55.0
+    min_short_score: float = 45.0
+    max_risk_for_entry: float = 85.0
+    min_entry_quality: float = 25.0
+    min_confidence: float = 28.0
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
     scanner_interval: int = 60
@@ -107,7 +107,6 @@ class RawFeatures:
     wick_rejection:float=0; close_location:float=0
     breakout_pressure:float=0; reversal_pressure:float=0; noise:float=0
     persistence:float=0; price:float=0
-    # ✅ V2 Features
     vol_regime:float=0; order_flow_imbalance:float=0; sr_touches:int=0
     acceleration_score:float=0; volume_spread_ratio:float=0
 
@@ -123,7 +122,6 @@ class MSSIOutput:
     decision:str="WAIT"; confidence:float=0; final_score:float=0
     sl_percent:float=2.0; tp_percent:float=4.0
     reasons:List[str]=field(default_factory=list)
-    # ✅ V2 additions
     oi_delta:float=0; funding_rate:float=0; vol_regime:float=0
     acceleration_score:float=0; sr_touches:int=0
 
@@ -199,7 +197,6 @@ class MSSIEngine:
         f.close_location = safe_div(c[t]-l[t], rng)
         f.buy_sell_imbalance = (f.close_location - 0.5) * 2 * min(abs(vol_z)/2, 1.0)
         f.delta_pressure = f.buy_sell_imbalance * (1 if f.ret_1>=0 else -1)
-        # ✅ V2: OI/Funding
         f.oi_delta = oi_data.get("oi_change", 0) if oi_data else 0
         f.oi_price_agreement = math.copysign(1.0, f.ret_1) * math.copysign(1.0, f.oi_delta) if f.ret_1 != 0 and f.oi_delta != 0 else 0
         f.funding_rate = funding_data.get("rate", 0) if funding_data else 0
@@ -209,14 +206,11 @@ class MSSIEngine:
                                0.20*f.participation + 0.20*max(f.buy_sell_imbalance,0))
         f.reversal_pressure = (0.30*f.wick_rejection + 0.25*max(-f.delta_pressure,0) +
                                0.25*min(abs(f.funding_rate)*10000,1) + 0.20*(1-f.efficiency))
-
-        # ✅ V2 Features
         f.vol_regime = clamp(100 * (f.realized_vol / _std(rets[-50:]) if len(rets)>=50 else 1), 0, 200)
         f.order_flow_imbalance = f.buy_sell_imbalance * f.participation
         f.acceleration_score = safe_div(f.ret_5 - f.ret_20, max(f.realized_vol, 0.0001))
         f.volume_spread_ratio = safe_div(v[t] - v[t-5], v[t-5]) if t>=5 else 0
         f.sr_touches = sum(1 for i in range(max(0,t-10), t) if abs(c[i] - c[i-1])/c[i-1] > 0.005)
-
         return f
 
     def infer_direction(self, f: RawFeatures) -> TrendDirection:
@@ -242,75 +236,57 @@ class MSSIEngine:
         m = MSSIOutput()
         m.regime = regime.value
         m.direction = direction.value
-        
-        # ✅ V2: دمج OI/Funding
         db_raw = (0.35*max(min(f.ret_20*15,1),-1) + 0.20*max(min(f.ret_5*20,1),-1) +
                   0.20*f.buy_sell_imbalance + 0.15*f.oi_price_agreement +
                   0.10*max(min((f.close_location-0.5)*2,1),-1) +
-                  0.05*max(min(f.oi_delta*50,1),-1))  # وزن خفيف لـ OI
+                  0.05*max(min(f.oi_delta*50,1),-1))
         m.direction_bias = scale_signed_to_100(db_raw)
-        
         m.trend_strength = clamp(35*f.efficiency + 25*min(f.range_expansion/1.8,1) +
                                  20*f.participation + 20*max(f.oi_price_agreement,0) +
-                                 10*f.vol_regime/100)  # دمج Regime
-        
+                                 10*f.vol_regime/100)
         m.momentum_score = clamp(30*abs(max(min(f.ret_1*80,1),-1)) +
                                  35*abs(max(min(f.ret_5*25,1),-1)) +
                                  35*(f.buy_sell_imbalance+1)/2 +
-                                 15*f.acceleration_score)  # دمج Acceleration
-        
+                                 15*f.acceleration_score)
         m.market_structure_score = clamp(40*f.efficiency + 25*(1-f.noise) +
                                          20*max(min((f.close_location-0.5)*2,1),0) +
                                          15*max(f.oi_price_agreement,0) +
-                                         10*f.order_flow_imbalance)  # دمج Order Flow
-        
+                                         10*f.order_flow_imbalance)
         m.acceptance_score = clamp(35*max(min((f.close_location-0.5)*2,1),0) +
                                    25*(1-f.wick_rejection) + 20*f.efficiency +
                                    20*min(f.range_expansion/1.5,1) +
-                                   15*f.volume_spread_ratio)  # دمج Volume Spread
-        
+                                   15*f.volume_spread_ratio)
         m.participation_score = clamp(45*f.participation +
                                       30*min(max(f.volume_zscore,0)/3,1) +
                                       25*min(abs(f.buy_sell_imbalance),1) +
                                       10*f.order_flow_imbalance)
-        
         m.continuation_probability = clamp(30*f.efficiency + 20*max(f.oi_price_agreement,0) +
                                            20*f.participation + 15*m.acceptance_score/100 +
                                            15*f.persistence +
-                                           10*f.vol_regime/100)  # دمج Regime
-        
+                                           10*f.vol_regime/100)
         m.reversal_probability = clamp(30*f.wick_rejection + 25*f.noise +
                                        20*max(0,f.range_expansion-1.3)/0.7 +
                                        15*(1-f.efficiency) + 10*(1-f.persistence) +
-                                       10*abs(f.funding_rate)*10000)  # دمج Funding
-        
+                                       10*abs(f.funding_rate)*10000)
         m.breakout_probability = clamp(25*m.momentum_score/100 + 20*f.participation +
                                        20*f.compression + 20*f.efficiency + 15*(1-f.noise))
-        
         m.pullback_quality = clamp(35*f.efficiency + 25*m.acceptance_score/100 +
                                    20*(1-m.exhaustion_score/100) + 20*f.persistence)
-        
         m.exhaustion_score = clamp(35*f.wick_rejection + 30*max(0,f.range_expansion-1.2)/0.8 +
                                    20*(1-f.efficiency) + 15*max(0,-f.buy_sell_imbalance))
-        
         m.noise_score = clamp(55*f.noise + 25*(1-f.persistence) +
                               20*(1-abs(f.close_location-0.5)*2))
-        
         m.risk_score = clamp(30*min(f.range_expansion/2,1) + 25*m.reversal_probability/100 +
                              20*m.noise_score/100 + 15*m.exhaustion_score/100 +
                              10*(1-m.pullback_quality/100) +
-                             5*abs(f.funding_rate)*10000)  # مخاطرة إضافية من Funding
-
+                             5*abs(f.funding_rate)*10000)
         eq_raw = (0.24*m.trend_strength + 0.16*m.momentum_score +
                   0.15*m.market_structure_score + 0.14*m.participation_score +
                   0.14*m.continuation_probability + 0.09*m.pullback_quality -
                   0.08*m.reversal_probability - 0.14*m.risk_score)
         m.entry_quality = clamp(eq_raw)
-
         m.sl_percent = max(0.5, min(f.atr_ratio*100*1.5, CFG.max_sl_percent))
         m.tp_percent = max(1.0, min(f.atr_ratio*100*3.0, CFG.max_tp_percent))
-
-        # ✅ V2: حساب الثقة دومًا — قبل اتخاذ القرار
         m.confidence = (
             m.entry_quality * 0.35 +
             m.continuation_probability * 0.25 +
@@ -319,46 +295,35 @@ class MSSIEngine:
             m.acceptance_score * 0.10
         )
         m.final_score = m.confidence
-
         is_bull = direction == TrendDirection.BULLISH
         is_bear = direction == TrendDirection.BEARISH
-
-        # ✅ V2: Filters ذكية — تقليل الصفقات السيئة
         if f.oi_delta != 0 and math.copysign(1, f.ret_1) != math.copysign(1, f.oi_delta):
             m.decision = "WAIT"
             m.reasons.append("OI Delta contradicts return")
             return m
-
         if abs(f.funding_rate) > 0.005:
             m.decision = "WAIT"
             m.reasons.append(f"Funding stress: {f.funding_rate:.6f}")
             return m
-
         if f.acceleration_score < -0.2:
             m.decision = "WAIT"
             m.reasons.append(f"Acceleration negative: {f.acceleration_score:.2f}")
             return m
-
         if f.sr_touches > 3:
             m.decision = "WAIT"
             m.reasons.append(f"SR touches high: {f.sr_touches}")
             return m
-
-        # ✅ V2: مرونة في التوازن
         if is_bull and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability >= m.reversal_probability - 2 and m.direction_bias >= CFG.min_long_score:
             m.decision = "BUY"
         elif is_bear and m.entry_quality >= CFG.min_entry_quality and m.risk_score <= CFG.max_risk_for_entry and m.continuation_probability >= m.reversal_probability - 2 and m.direction_bias <= (100 - CFG.min_short_score):
             m.decision = "SELL"
         else:
             m.decision = "WAIT"
-
-        # ✅ V2: تسجيل الإضافات
         m.oi_delta = f.oi_delta
         m.funding_rate = f.funding_rate
         m.vol_regime = f.vol_regime
         m.acceleration_score = f.acceleration_score
         m.sr_touches = f.sr_touches
-
         m.reasons = [
             f"Regime={regime.value} Dir={direction.value}",
             f"DE={f.efficiency:.3f} Noise={f.noise:.3f} Persist={f.persistence:.2f}",
@@ -425,7 +390,7 @@ class TradeDB:
                 pnl_percent REAL, commission REAL DEFAULT 0, closed_at TEXT,
                 close_reason TEXT, ai_explanation TEXT, final_score REAL, regime TEXT,
                 oi_delta REAL, funding_rate REAL, vol_regime REAL, acceleration REAL,
-                partial_closes INTEGER DEFAULT 0)""")  # ✅ AI Trade Management: track partial closes
+                partial_closes INTEGER DEFAULT 0)""")
             self.conn.commit()
     def insert_trade(self, **kw):
         with self.lock:
@@ -476,14 +441,7 @@ class TradeDB:
                 )
                 if not found:
                     logger.warning(f"❌ Stale trade #{t['id']} ({sym}) — no position on exchange. Marking as CLOSED.")
-                    self.close_trade(
-                        t["id"],
-                        ep=t.get("entry_price", 0),
-                        rpnl=0.0,
-                        pp=0.0,
-                        comm=0.0,
-                        reason="STALE_POSITION_CLEANUP"
-                    )
+                    self.close_trade(t["id"],ep=t.get("entry_price",0),rpnl=0.0,pp=0.0,comm=0.0,reason="STALE_POSITION_CLEANUP")
                     cleaned += 1
             except Exception as e:
                 logger.error(f"⚠️ Failed to check {sym}: {e}")
@@ -491,11 +449,9 @@ class TradeDB:
             logger.info(f"✅ Cleaned {cleaned} stale positions.")
         else:
             logger.info("✅ No stale positions found.")
-    # ✅ V2: دالة حفظ الأهداف في DB
     def update_trade_targets(self, tid, new_sl, new_tp, new_sl_id, new_tp_id, note=""):
         with self.lock:
             if note:
-                # إضافة الملاحظة (مثل BREAKEVEN) إلى حقل السبب الأصلي
                 self.conn.execute("""
                     UPDATE trades 
                     SET sl_price=?, tp_price=?, sl_order_id=?, tp_order_id=?, reason = reason || ? 
@@ -508,7 +464,6 @@ class TradeDB:
                     WHERE id=?
                 """, (new_sl, new_tp, new_sl_id, new_tp_id, tid))
             self.conn.commit()
-    # ✅ AI Trade Management: دالة جزئية
     def update_partial_close(self, tid, new_qty, note):
         with self.lock:
             self.conn.execute("""
@@ -517,7 +472,6 @@ class TradeDB:
                 WHERE id=?
             """, (new_qty, f" | {note}", tid))
             self.conn.commit()
-    # ✅ AI Trade Management: تعديل في الحقل
     def increment_partial_closes(self, tid):
         with self.lock:
             self.conn.execute("""
@@ -675,6 +629,43 @@ SR Touches: {mssi.sr_touches}
             result.explanation=f"AI_ERROR: {str(e)[:100]}"
         return result
 
+    # ✅ AI Trade Management: تقييم الصفقات المفتوحة
+    def evaluate_open_trade(self, symbol, pnl_pct, elapsed_hours, current_mssi) -> dict:
+        if not CFG.use_ai_explainer: return {"action": "HOLD"}
+        prompt = f"""أنت مدير محافظ كمّي. لدينا صفقة مفتوحة حالياً.
+العملة: {symbol}
+الربح/الخسارة الحالي: {pnl_pct:.2f}%
+مدة الصفقة حتى الآن: {elapsed_hours:.1f} ساعة
+وضع السوق الحالي (Regime): {current_mssi.regime}
+قوة الترند: {current_mssi.trend_strength:.1f}/100
+احتمالية الانعكاس (Reversal Prob): {current_mssi.reversal_probability:.1f}/100
+لمسات الدعم/المقاومة: {current_mssi.sr_touches}
+
+بناءً على المعطيات الفنية، اختر إجراءً واحداً فقط:
+- "HOLD": إبقاء الصفقة (السوق لا يزال جيداً).
+- "CLOSE_ALL": إغلاق كامل (خطر انعكاس حقيقي أو اكتفاء بالربح).
+- "CLOSE_HALF": جني ربح جزئي 50% (إذا كان الربح جيداً وهناك مقاومة، لكن فرصة الصعود قائمة).
+
+أجب بصيغة JSON فقط:
+{{"action": "HOLD أو CLOSE_ALL أو CLOSE_HALF", "reason": "شرح قصير جدًا"}}"""
+        for attempt in range(3):
+            try:
+                comp = ai_client.chat.completions.create(
+                    model=CFG.ai_model,
+                    messages=[{"role":"system","content":"/think"},{"role":"user","content":prompt}],
+                    temperature=0.3, max_tokens=200, stream=False)
+                cleaned = comp.choices[0].message.content.strip()
+                js = cleaned.find("{"); je = cleaned.rfind("}") + 1
+                if js >= 0 and je > js: cleaned = cleaned[js:je]
+                decision = json.loads(cleaned)
+                action = decision.get("action", "HOLD").upper()
+                if action not in ["HOLD", "CLOSE_ALL", "CLOSE_HALF"]: action = "HOLD"
+                logger.info(f"🧠 AI Trade Manager [{symbol}]: {action} | {decision.get('reason','')}")
+                return {"action": action, "reason": decision.get("reason", "")}
+            except Exception as e:
+                time.sleep(2)
+        return {"action": "HOLD"}
+
 ai_analyst = AIAnalyst()
 
 
@@ -737,28 +728,22 @@ class MarketScanner:
         if cm.count(sk,"1h")<50: self._load(sk,sym)
         d1h=cm.get(sk,"1h"); d1d=cm.get(sk,"1d")
         if len(d1h)<50: logger.info(f"Not enough: {sym}"); return
-
-        # ✅ V2: بيانات OI/Funding
         oi_1h = None
         funding_1h = None
         try:
             oi_1h = exchange.fetch_open_interest(sym)
             funding_1h = exchange.fetch_funding_rate(sym)
         except: pass
-
         mssi = mssi_engine.analyze(d1h, d1d if len(d1d)>=30 else None, oi_1h, funding_1h)
         if not mssi: logger.info(f"MSSI fail: {sym}"); return
-
         logger.info(f">>> MSSI {sym}: {mssi.decision} | Regime={mssi.regime} | Dir={mssi.direction}")
         for r in mssi.reasons: logger.info(f"   {r}")
-
         ai = ai_analyst.analyze(sym, mssi)
         final = FinalDecision()
         final.sl_percent = mssi.sl_percent; final.tp_percent = mssi.tp_percent
         final.regime = mssi.regime; final.is_pullback = mssi.pullback_quality > 50
         final.mssi_score = mssi.confidence; final.ai_score = ai.confidence
         final.ai_explanation = ai.explanation; final.ai_regime = ai.regime
-
         if mssi.decision == "WAIT":
             final.decision = Decision.WAIT
             final.final_score = mssi.confidence
@@ -783,16 +768,12 @@ class MarketScanner:
             final.decision = Decision.BUY if mssi.decision=="BUY" else Decision.SELL
             final.final_score = mssi.confidence * CFG.mssi_weight + ai.confidence * CFG.ai_weight
             final.reasons = [f"MSSI {mssi.decision} | Score={final.final_score:.1f}"] + mssi.reasons
-
         logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | Conf(MSSI)={mssi.confidence:.1f}")
-
         if final.decision == Decision.WAIT:
             return
-
         if final.final_score < CFG.min_confidence:
             logger.info(f"🚫 {sym} رُفضت: الثقة ضعيفة ({final.final_score:.1f} < {CFG.min_confidence})")
             return
-
         bot_stats["last_analysis"][sym]={"decision":final.decision.value,"final_score":round(final.final_score,1),
             "regime":mssi.regime,"ai":f"{ai.decision}({ai.confidence}){'[ERR]' if ai.error else ''}",
             "time":datetime.now(timezone.utc).isoformat()}
@@ -905,10 +886,9 @@ class PositionMonitor:
         pos=get_pos(sym)
         if pos=="ERROR": return
         if pos is None:
-            # جلب سبب الخروج الذكي من الذاكرة إذا وجد، وإلا استخدام الأسباب التقليدية
             st=trade_state.get(sym,{})
             smart_reason=st.pop("custom_close_reason",None)
-            st.pop("invalidation_count",None) # تنظيف العداد
+            st.pop("invalidation_count",None)
             reason=smart_reason or ("STOP_LOSS" if sl_st=="closed" else "TAKE_PROFIT" if tp_st=="closed" else "MANUAL")
             ep,rpnl,comm=self._rexit(sym,trade); entry=trade["entry_price"]; qty=trade["quantity"]
             if ep==0: ep=entry
@@ -920,13 +900,9 @@ class PositionMonitor:
             logger.info(f"CLOSED {sym} | {reason} | PnL={rpnl:.4f} ({pp:.2f}%)")
             self._cancel(sym,trade)
             return
-        # ==========================================
-        # 🔥 الإدارة الذكية للصقات المفتوحة (بدون API إضافي)
-        # ==========================================
         try:
             current_price = 0
             if sk:
-                # جلب آخر سعر من شموع الدقيقة (WebSocket)
                 d1m = cm.get(sk, "1m")
                 if d1m: current_price = float(d1m[-1][4])
             if current_price > 0:
@@ -953,13 +929,18 @@ class PositionMonitor:
             try: ep=exchange_public.fetch_ticker(sym)["last"]
             except: pass
         return ep,rpnl,comm
-    def _cancel(self,sym,trade):
-        for oid in [trade.get("sl_order_id"),trade.get("tp_order_id")]:
+    # ✅ التعديل 1: المكنسة الهجومية
+    def _cancel(self, sym, trade):
+        for oid in [trade.get("sl_order_id"), trade.get("tp_order_id")]:
             if not oid: continue
             try:
-                if self._ost(sym,oid)=="open": exchange.cancel_order(oid,sym)
-            except: pass
-    # ✅ V2: دالة تحديث الأهداف
+                exchange.cancel_order(oid, sym)
+            except:
+                pass
+        try:
+            exchange.cancel_all_orders(sym)
+        except Exception as e:
+            pass
     def _update_binance_orders(self, sym, trade, new_sl, new_tp, note=""):
         self._cancel(sym, trade)
         qty = float(trade["quantity"])
@@ -980,13 +961,11 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"TP update fail for {sym}: {e}")
         if new_sl_id or new_tp_id:
-            # تمرير الملاحظة لقاعدة البيانات للتوثيق
             db.update_trade_targets(trade["id"], new_sl_price, new_tp_price, new_sl_id, new_tp_id, note)
             trade["sl_price"] = new_sl_price
             trade["tp_price"] = new_tp_price
             trade["sl_order_id"] = new_sl_id
             trade["tp_order_id"] = new_tp_id
-    # ✅ V2: الإدارة الذكية للصفقات
     def _manage_smart_trade(self, sym, trade, current_price, sk):
         try:
             d1h = cm.get(sk, "1h")
@@ -998,16 +977,17 @@ class PositionMonitor:
             sl_price = float(trade["sl_price"])
             atr_value = current_features.atr_ratio * entry 
             pnl_distance = (current_price - entry) if side == "LONG" else (entry - current_price)
-            # 🔥 القاعدة 1: تأمين الصفقة بناءً على ATR مع التوثيق
+            pnl_pct = (pnl_distance / entry) * 100
+            # 🔥 القاعدة 1: تأمين الصفقة بناءً على ATR
             if pnl_distance >= atr_value:
                 new_sl = entry * 1.002 if side == "LONG" else entry * 0.998
                 should_update = (side == "LONG" and sl_price < new_sl) or (side == "SHORT" and sl_price > new_sl)
                 if should_update:
                     logger.info(f"🛡️ {sym} | السعر تحرك +1 ATR. تم تأمين الصفقة (Breakeven).")
                     self._update_binance_orders(sym, trade, new_sl, float(trade["tp_price"]), note="BREAKEVEN_ATR")
-            # 🔥 القاعدة 2: الخروج الذكي مع نظام تأكيد (Debouncing)
+            # 🔥 القاعدة 2: الخروج الذكي مع نظام تأكيد
             current_mssi = mssi_engine.analyze(d1h)
-            st = trade_state.setdefault(sym, {}) # استخدام الذاكرة المؤقتة للعداد
+            st = trade_state.setdefault(sym, {})
             if current_mssi:
                 is_invalidated = False
                 if side == "LONG" and (current_mssi.decision == "SELL" or current_mssi.reversal_probability > 75):
@@ -1019,29 +999,52 @@ class PositionMonitor:
                     logger.warning(f"⚠️ {sym} | تحذير انعكاس ({st['invalidation_count']}/3)")
                     if st["invalidation_count"] >= 3:
                         logger.warning(f"🚨 {sym} | تأكيد انتفاء سبب الدخول لثلاث دورات! إغلاق مبكر.")
-                        st["custom_close_reason"] = "SMART_INVALIDATION_EXIT" # حفظ السبب لتسجيله في DB
+                        st["custom_close_reason"] = "SMART_INVALIDATION_EXIT"
                         emergency_close(sym, "SMART_INVALIDATION_EXIT")
+                        return
                 else:
-                    # إعادة التصفير إذا اختفت الإشارة المعاكسة
                     if st.get("invalidation_count", 0) > 0:
                         st["invalidation_count"] = 0
+
+                # 🔥 القاعدة 3: الهدف الذهبي (Scalping Sweet Spot)
+                if pnl_distance > 0 and pnl_pct >= 1.3:
+                    logger.info(f"💰 {sym} | السعر وصل للهدف الذهبي (+{pnl_pct:.2f}%). جني أرباح فوري!")
+                    st["custom_close_reason"] = "SMART_FAST_TAKE_PROFIT"
+                    emergency_close(sym, "SMART_FAST_TAKE_PROFIT")
+                    return
+
+                # 🔥 القاعدة 4: تدخل الذكاء الاصطناعي للإدارة
+                trade_time_str = trade["timestamp"].replace("Z", "+00:00")
+                elapsed_hours = (datetime.now(timezone.utc) - datetime.fromisoformat(trade_time_str)).total_seconds() / 3600.0
+                if elapsed_hours > 1.0 or pnl_pct > 0.5:
+                    last_ai_eval = st.get("last_ai_eval_time", 0)
+                    if time.time() - last_ai_eval > 900:
+                        ai_eval = ai_analyst.evaluate_open_trade(sym, pnl_pct, elapsed_hours, current_mssi)
+                        st["last_ai_eval_time"] = time.time()
+                        ai_action = ai_eval["action"]
+                        if ai_action == "CLOSE_ALL":
+                            logger.info(f"🎯 الذكاء الاصطناعي يقرر الإغلاق الكامل لـ {sym}: {ai_eval['reason']}")
+                            st["custom_close_reason"] = "AI_CLOSE_ALL"
+                            emergency_close(sym, "AI_CLOSE_ALL")
+                            return
+                        elif ai_action == "CLOSE_HALF":
+                            if not st.get("half_closed", False):
+                                self._partial_close(sym, trade, 0.5)
+                                st["half_closed"] = True
         except Exception as e:
             logger.error(f"Error managing smart trade {sym}: {e}")
-    # ✅ AI Trade Management: دالة جزئية
     def _partial_close(self, sym, trade, close_pct):
         try:
             qty = float(trade["quantity"])
             close_qty = qty * close_pct
             remaining_qty = qty - close_qty
-            if remaining_qty < 0.01:  # لا تترك كسر صغير
+            if remaining_qty < 0.01:
                 logger.info(f"Closing entire position for {sym} due to small remainder.")
                 emergency_close(sym, "PARTIAL_TO_FULL_CLOSE")
                 return
             cs = "sell" if trade["side"] == "LONG" else "buy"
-            # بيع جزء من الكمية
             order = exchange.create_market_order(sym, cs, close_qty, params={"reduceOnly":True})
             logger.info(f"Partial close executed: {sym} | {close_pct*100:.0f}% | Qty: {close_qty}")
-            # تحديث الكمية في DB
             db.update_partial_close(trade["id"], remaining_qty, f"PARTIAL_CLOSE({close_pct*100:.0f}%)")
             trade["quantity"] = remaining_qty
             db.increment_partial_closes(trade["id"])
