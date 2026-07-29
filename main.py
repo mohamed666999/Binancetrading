@@ -489,6 +489,23 @@ class TradeDB:
             logger.info(f"✅ Cleaned {cleaned} stale positions.")
         else:
             logger.info("✅ No stale positions found.")
+    # ✅ V2: دالة حفظ الأهداف في DB
+    def update_trade_targets(self, tid, new_sl, new_tp, new_sl_id, new_tp_id, note=""):
+        with self.lock:
+            if note:
+                # إضافة الملاحظة (مثل BREAKEVEN) إلى حقل السبب الأصلي
+                self.conn.execute("""
+                    UPDATE trades 
+                    SET sl_price=?, tp_price=?, sl_order_id=?, tp_order_id=?, reason = reason || ? 
+                    WHERE id=?
+                """, (new_sl, new_tp, new_sl_id, new_tp_id, f" | {note}", tid))
+            else:
+                self.conn.execute("""
+                    UPDATE trades 
+                    SET sl_price=?, tp_price=?, sl_order_id=?, tp_order_id=? 
+                    WHERE id=?
+                """, (new_sl, new_tp, new_sl_id, new_tp_id, tid))
+            self.conn.commit()
 
 
 db = TradeDB(CFG.db_path)
@@ -863,11 +880,16 @@ class PositionMonitor:
             time.sleep(CFG.monitor_interval)
     def _check(self,trade):
         sym=trade["symbol"]
+        sk=next((k for k, v in CFG.watchlist.items() if v == sym), None)
         sl_st=self._ost(sym,trade.get("sl_order_id")); tp_st=self._ost(sym,trade.get("tp_order_id"))
         pos=get_pos(sym)
         if pos=="ERROR": return
         if pos is None:
-            reason="STOP_LOSS" if sl_st=="closed" else "TAKE_PROFIT" if tp_st=="closed" else "MANUAL"
+            # جلب سبب الخروج الذكي من الذاكرة إذا وجد، وإلا استخدام الأسباب التقليدية
+            st=trade_state.get(sym,{})
+            smart_reason=st.pop("custom_close_reason",None)
+            st.pop("invalidation_count",None) # تنظيف العداد
+            reason=smart_reason or ("STOP_LOSS" if sl_st=="closed" else "TAKE_PROFIT" if tp_st=="closed" else "MANUAL")
             ep,rpnl,comm=self._rexit(sym,trade); entry=trade["entry_price"]; qty=trade["quantity"]
             if ep==0: ep=entry
             if rpnl==0:
@@ -877,6 +899,20 @@ class PositionMonitor:
             db.close_trade(trade["id"],ep,rpnl,pp,comm,reason)
             logger.info(f"CLOSED {sym} | {reason} | PnL={rpnl:.4f} ({pp:.2f}%)")
             self._cancel(sym,trade)
+            return
+        # ==========================================
+        # 🔥 الإدارة الذكية للصقات المفتوحة (بدون API إضافي)
+        # ==========================================
+        try:
+            current_price = 0
+            if sk:
+                # جلب آخر سعر من شموع الدقيقة (WebSocket)
+                d1m = cm.get(sk, "1m")
+                if d1m: current_price = float(d1m[-1][4])
+            if current_price > 0:
+                self._manage_smart_trade(sym, trade, current_price, sk)
+        except Exception as e:
+            pass
     def _csz(self,sym):
         try: return float(exchange.market(sym).get("contractSize",1) or 1)
         except: return 1.0
@@ -903,6 +939,74 @@ class PositionMonitor:
             try:
                 if self._ost(sym,oid)=="open": exchange.cancel_order(oid,sym)
             except: pass
+    # ✅ V2: دالة تحديث الأهداف في DB
+    def _update_binance_orders(self, sym, trade, new_sl, new_tp, note=""):
+        self._cancel(sym, trade)
+        qty = float(trade["quantity"])
+        cs = "sell" if trade["side"] == "LONG" else "buy"
+        new_sl_id, new_tp_id = "", ""
+        try:
+            new_sl_price = float(exchange.price_to_precision(sym, new_sl))
+            slo = exchange.create_order(sym, "STOP_MARKET", cs, qty, None,
+                        {"stopPrice": new_sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
+            new_sl_id = slo.get("id", "")
+        except Exception as e:
+            logger.error(f"SL update fail for {sym}: {e}")
+        try:
+            new_tp_price = float(exchange.price_to_precision(sym, new_tp))
+            tpo = exchange.create_order(sym, "TAKE_PROFIT_MARKET", cs, qty, None,
+                        {"stopPrice": new_tp_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
+            new_tp_id = tpo.get("id", "")
+        except Exception as e:
+            logger.error(f"TP update fail for {sym}: {e}")
+        if new_sl_id or new_tp_id:
+            # تمرير الملاحظة لقاعدة البيانات للتوثيق
+            db.update_trade_targets(trade["id"], new_sl_price, new_tp_price, new_sl_id, new_tp_id, note)
+            trade["sl_price"] = new_sl_price
+            trade["tp_price"] = new_tp_price
+            trade["sl_order_id"] = new_sl_id
+            trade["tp_order_id"] = new_tp_id
+    # ✅ V2: الإدارة الذكية للصفقات
+    def _manage_smart_trade(self, sym, trade, current_price, sk):
+        try:
+            d1h = cm.get(sk, "1h")
+            if len(d1h) < 50: return 
+            current_features = mssi_engine.extract(d1h)
+            if not current_features: return
+            entry = float(trade["entry_price"])
+            side = trade["side"]
+            sl_price = float(trade["sl_price"])
+            atr_value = current_features.atr_ratio * entry 
+            pnl_distance = (current_price - entry) if side == "LONG" else (entry - current_price)
+            # 🔥 القاعدة 1: تأمين الصفقة بناءً على ATR مع التوثيق
+            if pnl_distance >= atr_value:
+                new_sl = entry * 1.002 if side == "LONG" else entry * 0.998
+                should_update = (side == "LONG" and sl_price < new_sl) or (side == "SHORT" and sl_price > new_sl)
+                if should_update:
+                    logger.info(f"🛡️ {sym} | السعر تحرك +1 ATR. تم تأمين الصفقة (Breakeven).")
+                    self._update_binance_orders(sym, trade, new_sl, float(trade["tp_price"]), note="BREAKEVEN_ATR")
+            # 🔥 القاعدة 2: الخروج الذكي مع نظام تأكيد (Debouncing)
+            current_mssi = mssi_engine.analyze(d1h)
+            st = trade_state.setdefault(sym, {}) # استخدام الذاكرة المؤقتة للعداد
+            if current_mssi:
+                is_invalidated = False
+                if side == "LONG" and (current_mssi.decision == "SELL" or current_mssi.reversal_probability > 75):
+                    is_invalidated = True
+                elif side == "SHORT" and (current_mssi.decision == "BUY" or current_mssi.reversal_probability > 75):
+                    is_invalidated = True
+                if is_invalidated:
+                    st["invalidation_count"] = st.get("invalidation_count", 0) + 1
+                    logger.warning(f"⚠️ {sym} | تحذير انعكاس ({st['invalidation_count']}/3)")
+                    if st["invalidation_count"] >= 3:
+                        logger.warning(f"🚨 {sym} | تأكيد انتفاء سبب الدخول لثلاث دورات! إغلاق مبكر.")
+                        st["custom_close_reason"] = "SMART_INVALIDATION_EXIT" # حفظ السبب لتسجيله في DB عند الإغلاق
+                        emergency_close(sym, "SMART_INVALIDATION_EXIT")
+                else:
+                    # إعادة التصفير إذا اختفت الإشارة المعاكسة (كانت مجرد ذيل شمعة كاذب)
+                    if st.get("invalidation_count", 0) > 0:
+                        st["invalidation_count"] = 0
+        except Exception as e:
+            logger.error(f"Error managing smart trade {sym}: {e}")
 
 
 async def ws_worker():
