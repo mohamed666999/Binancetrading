@@ -59,7 +59,7 @@ class Config:
     ws_reconnect_delay: int = 10
     candle_maxlen: int = 500
     flask_port: int = 8080
-        watchlist: Dict[str, str] = field(default_factory=lambda: {
+    watchlist: Dict[str, str] = field(default_factory=lambda: {
         # القائمة القديمة
         "btcusdt":"BTC/USDT:USDT","ethusdt":"ETH/USDT:USDT",
         "solusdt":"SOL/USDT:USDT","bnbusdt":"BNB/USDT:USDT",
