@@ -393,9 +393,9 @@ class DerivativesFeed:
 class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
-    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
-    ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
-    dry_run: bool = True
+    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
+    ai_model: str = "mistralai/mistral-medium-3.5-128b"
+    dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 15.0
     
@@ -1189,17 +1189,15 @@ class PositionMonitor:
 
             current_price = tickers[symbol]['last']
             
-            # 1. التحقق من Stop Loss الثابت أولاً
             if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
                 self.close_trade(trade, current_price, "STOP_LOSS")
                 continue
 
-            # 2. حساب مسافات الربح لتطبيق Trailing TP
             if self.cfg.trailing_enabled:
                 if side == "LONG":
                     current_distance = current_price - entry_price
                     tp_distance = tp_price - entry_price
-                else:  # SHORT
+                else:
                     current_distance = entry_price - current_price
                     tp_distance = entry_price - tp_price
 
@@ -1218,7 +1216,6 @@ class PositionMonitor:
                         self.close_trade(trade, current_price, "TRAILING_TAKE_PROFIT")
                         continue
             
-            # 3. التحقق من Take Profit العادي
             if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
                 self.close_trade(trade, current_price, "TAKE_PROFIT")
 
@@ -1260,29 +1257,22 @@ class PositionMonitor:
 
     def _cancel(self, sym, trade):  
         logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")  
-          
-        # استخراج أرقام الطلبات من قاعدة بيانات البوت (SL و TP)  
         orders_to_cancel = [  
             ("SL", trade.get("sl_order_id")),   
             ("TP", trade.get("tp_order_id"))  
         ]  
-          
         for order_type, oid in orders_to_cancel:  
             if not oid:   
                 continue  
-                  
             try:  
-                # التحقق من حالة الطلب قبل الحذف لتقليل الأخطاء
                 order = self.exchange.fetch_order(oid, sym)
                 if order.get("status") == "open":
-                    # حذف الطلب المحدد فقط  
                     self.exchange.cancel_order(oid, sym)  
                     logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
                 else:
                     logger.info(f"ℹ️ طلب {order_type} غير مفتوح (حالة: {order.get('status')})، لا حاجة للحذف.")
             except Exception as e:  
                 err_str = str(e)
-                # إذا ظهر هذا الخطأ يعني أن الطلب تنفذ (ضرب الهدف/الوقف) أو تم حذفه مسبقاً  
                 if "-2011" in err_str or "Unknown order" in err_str or "Order does not exist" in err_str:  
                     logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")  
                 else:  
@@ -1439,12 +1429,26 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 أجب JSON فقط:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
         try:
-            ai_client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=CFG.nvidia_api_key)
-            comp = ai_client.chat.completions.create(
-                model=CFG.ai_model,
-                messages=[{"role": "system", "content": "/think"}, {"role": "user", "content": prompt}],
-                temperature=0.6, top_p=0.95, max_tokens=1024, stream=False)
-            raw = comp.choices[0].message.content or ""
+            invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {CFG.nvidia_api_key}",
+                "Accept": "application/json",
+            }
+            payload = {
+                "messages": [
+                    {"role": "system", "content": "/think"},
+                    {"role": "user", "content": prompt}
+                ],
+                "model": CFG.ai_model,
+                "reasoning_effort": "high",
+                "max_tokens": 16384,
+                "stream": False,
+                "temperature": 0.7,
+                "top_p": 1
+            }
+            response = requests.post(invoke_url, headers=headers, json=payload, timeout=60)
+            resp_json = response.json()
+            raw = resp_json["choices"][0]["message"]["content"] or ""
             cleaned = raw.strip()
             if cleaned.startswith("```"):
                 lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
@@ -1700,20 +1704,15 @@ def get_pos(sym):
 
 def emergency_close(sym, reason):
     logger.critical(f"EMERGENCY CLOSE: {sym} | {reason}")
-    
-    # 1. جلب الصفقة من قاعدة البيانات لمعرفة أرقام طلبات SL و TP الخاصة بها فقط
     trade_to_close = None
     for t in db.get_open_trades():
         if t["symbol"] == sym:
             trade_to_close = t
             break
-            
-    # 2. حذف الطلبات المحددة الخاصة بهذه الصفقة فقط (Surgical Precision)
     if trade_to_close:
         for oid in [trade_to_close.get("sl_order_id"), trade_to_close.get("tp_order_id")]:
             if oid:
                 try:
-                    # التحقق من حالة الطلب قبل الحذف
                     order = exchange.fetch_order(oid, sym)
                     if order.get("status") == "open":
                         exchange.cancel_order(oid, sym)
@@ -1724,8 +1723,6 @@ def emergency_close(sym, reason):
                     err_str = str(e)
                     if "Unknown order" not in err_str and "Order does not exist" not in err_str and "-2011" not in err_str:
                         logger.warning(f"⚠️ فشل حذف الطلب {oid}: {e}")
-                        
-    # 3. إغلاق الكمية المفتوحة بسعر السوق
     try:
         pos = get_pos(sym)
         if pos and pos != "ERROR":
@@ -1936,7 +1933,6 @@ def main():
             time.sleep(0.2)
     logger.info("Data ready")
     
-    # تهيئة نظام المراقبة الجديد
     monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
     
