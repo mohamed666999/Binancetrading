@@ -439,7 +439,6 @@ class Config:
         "opusdt": "OP/USDT:USDT", "jupusdt": "JUP/USDT:USDT", "tiausdt": "TIA/USDT:USDT",
     })
         db_path: str = "apex_trades.db"
-
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
     ws_reconnect_delay: int = 8
