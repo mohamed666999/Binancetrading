@@ -391,13 +391,13 @@ class DerivativesFeed:
 
 @dataclass
 class Config:
-    binance_api_key: str = "YOUR_API_KEY"
-    binance_secret: str = "YOUR_SECRET"
-    nvidia_api_key: str = "YOUR_NVIDIA_KEY"
-    ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
+        binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
+    binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
+    nvidia_api_key: str = "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"
+
     dry_run: bool = True
-    leverage: int = 5
-    risk_per_trade_pct: float = 1.5
+    leverage: int = 100
+    risk_per_trade_pct: float = 500
     max_daily_trades: int = 12
     max_open_positions: int = 2
     cooldown_seconds: int = 120
