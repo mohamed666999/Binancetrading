@@ -395,9 +395,15 @@ class Config:
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
-    dry_run: bool = False
+    dry_run: bool = True
     leverage: int = 10
-    risk_per_trade_pct: float = 10.0
+    risk_per_trade_pct: float = 15.0
+    
+    # --- Trailing Take Profit (Dynamic Profit Lock) ---
+    trailing_enabled: bool = True
+    trailing_activation: float = 80.0
+    trailing_drop: float = 9.0
+
     max_daily_trades: int = 12
     max_open_positions: int = 2
     cooldown_seconds: int = 120
@@ -1088,7 +1094,6 @@ class TradeDB:
     def get_open_trades(self):
         with self.lock:
             rows = self.conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
-            # التعديل هنا لتجنب خطأ KeyError: 'symbol'
             cursor = self.conn.execute("SELECT * FROM trades LIMIT 0")
             cols = [description[0] for description in cursor.description]
         return [dict(zip(cols, r)) for r in rows]
@@ -1133,6 +1138,155 @@ class TradeDB:
 
 
 db = TradeDB(CFG.db_path)
+
+
+class PositionMonitor:
+    def __init__(self, exchange, db_instance: TradeDB, config: Config):
+        self.exchange = exchange
+        self.db = db_instance
+        self.cfg = config
+        self.trailing_peaks: Dict[int, float] = {}
+        self._run = True
+
+    def start(self):
+        threading.Thread(target=self._loop, daemon=True).start()
+        logger.info("Position Monitor started")
+
+    def stop(self):
+        self._run = False
+
+    def _loop(self):
+        while self._run:
+            try:
+                self.monitor_open_trades()
+            except Exception as e:
+                logger.error(f"Monitor loop error: {e}")
+            time.sleep(self.cfg.monitor_interval)
+
+    def monitor_open_trades(self):
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return
+
+        try:
+            symbols = list(set([t['symbol'] for t in open_trades]))
+            tickers = self.exchange.fetch_tickers(symbols)
+        except Exception as e:
+            logger.error(f"Monitor fetch error: {e}")
+            return
+
+        for trade in open_trades:
+            tid = trade['id']
+            symbol = trade['symbol']
+            side = trade['side']
+            entry_price = trade['entry_price']
+            tp_price = trade['tp_price']
+            sl_price = trade['sl_price']
+            qty = trade['quantity']
+
+            if symbol not in tickers:
+                continue
+
+            current_price = tickers[symbol]['last']
+            
+            # 1. التحقق من Stop Loss الثابت أولاً
+            if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
+                self.close_trade(trade, current_price, "STOP_LOSS")
+                continue
+
+            # 2. حساب مسافات الربح لتطبيق Trailing TP
+            if self.cfg.trailing_enabled:
+                if side == "LONG":
+                    current_distance = current_price - entry_price
+                    tp_distance = tp_price - entry_price
+                else:  # SHORT
+                    current_distance = entry_price - current_price
+                    tp_distance = entry_price - tp_price
+
+                progress = (current_distance / tp_distance) * 100.0 if tp_distance > 0 else 0.0
+
+                if tid not in self.trailing_peaks:
+                    self.trailing_peaks[tid] = 0.0
+
+                if progress > self.trailing_peaks[tid]:
+                    self.trailing_peaks[tid] = progress
+
+                peak = self.trailing_peaks[tid]
+
+                if peak >= self.cfg.trailing_activation:
+                    if progress <= (peak - self.cfg.trailing_drop):
+                        self.close_trade(trade, current_price, "TRAILING_TAKE_PROFIT")
+                        continue
+            
+            # 3. التحقق من Take Profit العادي
+            if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
+                self.close_trade(trade, current_price, "TAKE_PROFIT")
+
+    def close_trade(self, trade, exit_price, reason):
+        tid = trade['id']
+        symbol = trade['symbol']
+        side = trade['side']
+        qty = trade['quantity']
+        entry_price = trade['entry_price']
+
+        try:
+            if not self.cfg.dry_run:
+                close_side = 'sell' if side == 'LONG' else 'buy'
+                self.exchange.create_market_order(symbol, close_side, qty)
+        except Exception as e:
+            logger.error(f"Exchange API error closing trade {tid}: {e}")
+            return
+
+        if side == "LONG":
+            pnl = (exit_price - entry_price) * qty
+            pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        else:
+            pnl = (entry_price - exit_price) * qty
+            pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+
+        self.db.close_trade(
+            tid=tid,
+            ep=exit_price,
+            rpnl=pnl,
+            pp=pnl_pct,
+            comm=0.0,
+            reason=reason
+        )
+        
+        logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
+
+        if tid in self.trailing_peaks:
+            del self.trailing_peaks[tid]
+
+    def _cancel(self, sym, trade):  
+        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")  
+          
+        # استخراج أرقام الطلبات من قاعدة بيانات البوت (SL و TP)  
+        orders_to_cancel = [  
+            ("SL", trade.get("sl_order_id")),   
+            ("TP", trade.get("tp_order_id"))  
+        ]  
+          
+        for order_type, oid in orders_to_cancel:  
+            if not oid:   
+                continue  
+                  
+            try:  
+                # التحقق من حالة الطلب قبل الحذف لتقليل الأخطاء
+                order = self.exchange.fetch_order(oid, sym)
+                if order.get("status") == "open":
+                    # حذف الطلب المحدد فقط  
+                    self.exchange.cancel_order(oid, sym)  
+                    logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
+                else:
+                    logger.info(f"ℹ️ طلب {order_type} غير مفتوح (حالة: {order.get('status')})، لا حاجة للحذف.")
+            except Exception as e:  
+                err_str = str(e)
+                # إذا ظهر هذا الخطأ يعني أن الطلب تنفذ (ضرب الهدف/الوقف) أو تم حذفه مسبقاً  
+                if "-2011" in err_str or "Unknown order" in err_str or "Order does not exist" in err_str:  
+                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")  
+                else:  
+                    logger.error(f"⚠️ خطأ غير متوقع أثناء حذف طلب {order_type}: {e}")
 
 
 app = Flask(__name__)
@@ -1546,20 +1700,32 @@ def get_pos(sym):
 
 def emergency_close(sym, reason):
     logger.critical(f"EMERGENCY CLOSE: {sym} | {reason}")
+    
+    # 1. جلب الصفقة من قاعدة البيانات لمعرفة أرقام طلبات SL و TP الخاصة بها فقط
     trade_to_close = None
     for t in db.get_open_trades():
         if t["symbol"] == sym:
             trade_to_close = t
             break
+            
+    # 2. حذف الطلبات المحددة الخاصة بهذه الصفقة فقط (Surgical Precision)
     if trade_to_close:
         for oid in [trade_to_close.get("sl_order_id"), trade_to_close.get("tp_order_id")]:
             if oid:
                 try:
-                    exchange.cancel_order(oid, sym)
-                    logger.info(f"🧹 تم حذف الطلب المرتبط بالصفقة: {oid}")
+                    # التحقق من حالة الطلب قبل الحذف
+                    order = exchange.fetch_order(oid, sym)
+                    if order.get("status") == "open":
+                        exchange.cancel_order(oid, sym)
+                        logger.info(f"🧹 تم حذف الطلب المرتبط بالصفقة: {oid}")
+                    else:
+                        logger.info(f"ℹ️ الطلب {oid} لم يعد مفتوحاً (حالة: {order.get('status')})")
                 except Exception as e:
-                    if "Unknown order" not in str(e) and "Order does not exist" not in str(e):
+                    err_str = str(e)
+                    if "Unknown order" not in err_str and "Order does not exist" not in err_str and "-2011" not in err_str:
                         logger.warning(f"⚠️ فشل حذف الطلب {oid}: {e}")
+                        
+    # 3. إغلاق الكمية المفتوحة بسعر السوق
     try:
         pos = get_pos(sym)
         if pos and pos != "ERROR":
@@ -1574,27 +1740,22 @@ def emergency_close(sym, reason):
 
 
 def execute_trade(sym, final):
-    # 🛡️ البوابة 0: قفل خاص بكل عملة يمنع تداخل الـ Threads لنفس الرمز
     st = trade_state.setdefault(sym, {})
     if st.get("executing", False):
         return
 
     with execution_lock:
         try:
-            # تفعيل قفل العملة
             st["executing"] = True
 
-            # 🛡️ البوابة 1: حماية الانهيار اليومي
             if daily_pnl_pct() <= -CFG.max_daily_loss_pct or db.consecutive_losses() >= CFG.max_consecutive_losses: 
                 return
 
-            # 🛡️ البوابة 2: المزامنة الدقيقة بين قاعدة البيانات والمنصة
             open_trades = [t for t in db.get_open_trades() if t["symbol"] == sym]
             current_pos = get_pos(sym)
             
             if open_trades:
                 if not current_pos or current_pos == "ERROR":
-                    # تصحيح المزامنة: الداتا بيز تقول مفتوح، والمنصة تقول مغلق!
                     logger.info(f"🔄 تصحيح مزامنة لـ {sym}: إغلاق الصفقة في القاعدة لعدم وجود مركز حقيقي.")
                     try:
                         price = exchange_public.fetch_ticker(sym)["last"]
@@ -1606,7 +1767,6 @@ def execute_trade(sym, final):
                     logger.info(f"🚫 تجاهل: توجد صفقة مفتوحة مسبقاً لـ {sym}.")
                     return
 
-            # 🛡️ البوابة 3: التأكد من خلو المنصة من المراكز والأوامر
             if current_pos and current_pos != "ERROR": 
                 return
                 
@@ -1618,14 +1778,12 @@ def execute_trade(sym, final):
             except Exception:
                 pass
 
-            # 🛡️ البوابة 4: فترة التبريد وحدود التداول
             if time.time() - st.get("t", 0) < CFG.cooldown_seconds: 
                 return
 
             if db.count_today() >= CFG.max_daily_trades or db.open_count() >= CFG.max_open_positions: 
                 return
 
-            # 📊 حساب المخاطرة وحجم الصفقة (Risk Management)
             price = exchange_public.fetch_ticker(sym)["last"]
             side = "buy" if final.decision == Decision.BUY else "sell"
             
@@ -1641,21 +1799,18 @@ def execute_trade(sym, final):
             if qty <= 0: 
                 return
 
-            # التنفيذ الوهمي (DRY_RUN)
             if CFG.dry_run:
-                st["t"] = time.time() # تسجيل الوقت للوهمي فوراً
+                st["t"] = time.time()
                 db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price, confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
                 logger.info(f"✅ DRY RUN Trade Executed for {sym}")
                 return
 
-            # 🚀 التنفيذ الفعلي (LIVE)
             exchange.set_leverage(CFG.leverage, sym)
             order = exchange.create_market_order(sym, side, qty)
             eoid = order.get("id", "")
             
-            # 🔍 الانتظار الذكي (Polling) لاصطياد المركز فور فتحه
             p = None
-            for _ in range(10):  # محاولة لمدة 5 ثوانٍ كحد أقصى
+            for _ in range(10):
                 p = get_pos(sym)
                 if p and p != "ERROR":
                     break
@@ -1672,7 +1827,6 @@ def execute_trade(sym, final):
                 emergency_close(sym, "الكمية المفتوحة صفر")
                 return
 
-            # إعادة معايرة الحماية بدقة بناءً على سعر الدخول الفعلي
             sl_price = entry * (1 - final.sl_percent / 100) if side == "buy" else entry * (1 + final.sl_percent / 100)
             tp_price = entry * (1 + final.tp_percent / 100) if side == "buy" else entry * (1 - final.tp_percent / 100)
             
@@ -1682,7 +1836,6 @@ def execute_trade(sym, final):
             cs = "sell" if side == "buy" else "buy"
             sloid, tpoid = "", ""
 
-            # وضع أوامر الحماية (SL / TP)
             try:
                 slo = exchange.create_order(sym, "STOP_MARKET", cs, aqty, None, {"stopPrice": sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
                 sloid = slo.get("id", "")
@@ -1702,10 +1855,8 @@ def execute_trade(sym, final):
                 emergency_close(sym, "فشل وضع TP")
                 return
 
-            # تسجيل التبريد فقط بعد النجاح التام للعملية
             st["t"] = time.time()
             
-            # تسجيل الصفقة في القاعدة
             tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
             logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry}")
 
@@ -1714,108 +1865,7 @@ def execute_trade(sym, final):
             emergency_close(sym, str(e))
             
         finally:
-            # 🔓 تحرير قفل العملة لضمان عدم تجميدها مستقبلاً
             st["executing"] = False
-
-
-class PositionMonitor:
-    def __init__(self):
-        self._run = True
-
-    def start(self):
-        threading.Thread(target=self._loop, daemon=True).start()
-        logger.info("Monitor started")
-
-    def stop(self):
-        self._run = False
-
-    def _loop(self):
-        while self._run:
-            try:
-                for t in db.get_open_trades():
-                    self._check(t)
-            except Exception as e:
-                logger.error(f"Monitor: {e}")
-            time.sleep(CFG.monitor_interval)
-
-    def _check(self, trade):
-        sym = trade["symbol"]
-        try:
-            trade_time = datetime.fromisoformat(trade["timestamp"].replace("Z", "+00:00"))
-            if (datetime.now(timezone.utc) - trade_time).total_seconds() < 60:
-                return
-        except Exception:
-            pass
-        sl_st = self._ost(sym, trade.get("sl_order_id"))
-        tp_st = self._ost(sym, trade.get("tp_order_id"))
-        pos = get_pos(sym)
-        if pos == "ERROR":
-            return
-        if pos is None:
-            reason = "STOP_LOSS" if sl_st == "closed" else "TAKE_PROFIT" if tp_st == "closed" else "MANUAL"
-            ep, rpnl, comm = self._rexit(sym, trade)
-            entry = trade["entry_price"]
-            qty = trade["quantity"]
-            if ep == 0:
-                ep = entry
-            if rpnl == 0:
-                cs = self._csz(sym)
-                rq = qty * cs
-                rpnl = (ep - entry) * rq if trade["side"] == "LONG" else (entry - ep) * rq
-            notional = entry * qty if entry * qty else 1
-            pp = (rpnl / notional) * 100
-            db.close_trade(trade["id"], ep, rpnl, pp, comm, reason)
-            logger.info(f"CLOSED {sym} | {reason} | PnL={rpnl:.4f} ({pp:.2f}%)")
-            self._cancel(sym, trade)
-
-    def _csz(self, sym):
-        try:
-            return float(exchange.market(sym).get("contractSize", 1) or 1)
-        except Exception:
-            return 1.0
-
-    def _ost(self, sym, oid):
-        if not oid:
-            return "unknown"
-        try:
-            return exchange.fetch_order(oid, sym).get("status", "unknown")
-        except Exception:
-            return "unknown"
-
-    def _rexit(self, sym, trade):
-        ep, rpnl, comm = 0, 0, 0
-        try:
-            trades = exchange.fetch_my_trades(sym, limit=30)
-            for t in reversed(trades):
-                if t.get("reduceOnly") or (t.get("side") == "sell" and trade["side"] == "LONG") or (t.get("side") == "buy" and trade["side"] == "SHORT"):
-                    ep = float(t.get("price", 0) or t.get("average", 0))
-                    comm = float(t.get("fee", {}).get("cost", 0) or 0)
-                    info = t.get("info", {})
-                    rs = info.get("realizedPnl", "0")
-                    rpnl = float(rs) if rs else 0
-                    break
-        except Exception:
-            pass
-        if ep == 0:
-            try:
-                ep = exchange_public.fetch_ticker(sym)["last"]
-            except Exception:
-                pass
-        return ep, rpnl, comm
-
-    def _cancel(self, sym, trade):
-        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")
-        for order_type, oid in [("SL", trade.get("sl_order_id")), ("TP", trade.get("tp_order_id"))]:
-            if not oid:
-                continue
-            try:
-                exchange.cancel_order(oid, sym)
-                logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
-            except Exception as e:
-                if "-2011" in str(e) or "Unknown order" in str(e) or "Order does not exist" in str(e):
-                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")
-                else:
-                    logger.error(f"⚠️ خطأ غير متوقع أثناء حذف طلب {order_type}: {e}")
 
 
 async def ws_worker():
@@ -1885,8 +1935,11 @@ def main():
                 logger.warning(f"Load {sym} {tf}: {e}")
             time.sleep(0.2)
     logger.info("Data ready")
-    monitor = PositionMonitor()
+    
+    # تهيئة نظام المراقبة الجديد
+    monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
+    
     scanner = MarketScanner()
     scanner.start()
     bot_stats["status"] = "RUNNING"
