@@ -389,14 +389,16 @@ class DerivativesFeed:
             return {"liq_pressure_long": 0.0, "liq_pressure_short": 0.0}
 
 
+
 @dataclass
 class Config:
-        binance_api_key: str = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
-    binance_secret: str = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
-    nvidia_api_key: str = "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"
+    binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
+    binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
+    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
+    ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
     dry_run: bool = True
-    leverage: int = 100
-    risk_per_trade_pct: float = 500
+    leverage: int = 20
+    risk_per_trade_pct: float = 15.0
     max_daily_trades: int = 12
     max_open_positions: int = 2
     cooldown_seconds: int = 120
@@ -440,7 +442,7 @@ class Config:
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
     ws_reconnect_delay: int = 8
-
+    
 
 CFG = Config()
 
