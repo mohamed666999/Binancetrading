@@ -1089,7 +1089,9 @@ class TradeDB:
     def get_open_trades(self):
         with self.lock:
             rows = self.conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
-            cols = [d[0] for d in self.conn.execute("PRAGMA table_info(trades)").fetchall()]
+            # ⚠️ هذا هو السطر الذي تم تصحيحه لمنع خطأ KeyError: 'symbol'
+            cursor = self.conn.execute("SELECT * FROM trades LIMIT 0")
+            cols = [description[0] for description in cursor.description]
         return [dict(zip(cols, r)) for r in rows]
 
     def count_today(self):
@@ -1130,8 +1132,8 @@ class TradeDB:
         winrate = wins / total * 100 if total > 0 else 0
         return {"total": total, "wins": wins, "winrate": winrate, "total_pnl": pnl}
 
-
 db = TradeDB(CFG.db_path)
+
 
 
 app = Flask(__name__)
