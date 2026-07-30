@@ -3,3 +3,4 @@ ccxt
 requests
 Flask
 openai
+pandas
