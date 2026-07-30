@@ -1,0 +1,9 @@
+# Example config snippet for external strategies (do not commit secrets here)
+
+conor19w:
+  enabled: false
+  aggregator: weighted_majority
+  min_confidence: 30
+  strategies:
+    - candle_wick
+    - EMA_cross
