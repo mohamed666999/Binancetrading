@@ -438,7 +438,8 @@ class Config:
         "dotusdt": "DOT/USDT:USDT", "ltcusdt": "LTC/USDT:USDT", "aptusdt": "APT/USDT:USDT",
         "opusdt": "OP/USDT:USDT", "jupusdt": "JUP/USDT:USDT", "tiausdt": "TIA/USDT:USDT",
     })
-    db_path: str = "apex_trades.db"
+        db_path: str = "apex_trades.db"
+
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
     ws_reconnect_delay: int = 8
@@ -1086,19 +1087,14 @@ class TradeDB:
                  datetime.now(timezone.utc).isoformat(), reason, tid))
             self.conn.commit()
 
-    def get_open_trades(self):
+        def get_open_trades(self):
         with self.lock:
             rows = self.conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
-            # ⚠️ هذا هو السطر الذي تم تصحيحه لمنع خطأ KeyError: 'symbol'
+            # التعديل هنا لتجنب خطأ KeyError: 'symbol'
             cursor = self.conn.execute("SELECT * FROM trades LIMIT 0")
             cols = [description[0] for description in cursor.description]
         return [dict(zip(cols, r)) for r in rows]
 
-    def count_today(self):
-        t = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        with self.lock:
-            r = self.conn.execute("SELECT COUNT(*) FROM trades WHERE timestamp LIKE ?", (f"{t}%",)).fetchone()
-        return r[0] if r else 0
 
     def open_count(self):
         with self.lock:
