@@ -395,9 +395,9 @@ class Config:
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
-    dry_run: bool = False
-    leverage: int = 10
-    risk_per_trade_pct: float = 15.0
+    dry_run: bool = True
+    leverage: int = 50
+    risk_per_trade_pct: float = 50.0
     max_daily_trades: int = 12
     max_open_positions: int = 2
     cooldown_seconds: int = 120
