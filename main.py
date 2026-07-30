@@ -437,7 +437,7 @@ class Config:
         "dotusdt": "DOT/USDT:USDT", "ltcusdt": "LTC/USDT:USDT", "aptusdt": "APT/USDT:USDT",
         "opusdt": "OP/USDT:USDT", "jupusdt": "JUP/USDT:USDT", "tiausdt": "TIA/USDT:USDT",
     })
-    db_path: str = "apex_paper_fresh.db"  # <-- تم التعديل هنا لتصفير العداد
+    db_path: str = "apex_paper_fresh.db"
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
     ws_reconnect_delay: int = 8
@@ -1574,130 +1574,148 @@ def emergency_close(sym, reason):
 
 
 def execute_trade(sym, final):
+    # 🛡️ البوابة 0: قفل خاص بكل عملة يمنع تداخل الـ Threads لنفس الرمز
+    st = trade_state.setdefault(sym, {})
+    if st.get("executing", False):
+        return
+
     with execution_lock:
         try:
-            dpnl = daily_pnl_pct()
-            if dpnl <= -CFG.max_daily_loss_pct:
-                logger.critical(f"🛑 تجاوز حد الخسارة اليومي ({dpnl:.2f}%) — إيقاف التداول")
+            # تفعيل قفل العملة
+            st["executing"] = True
+
+            # 🛡️ البوابة 1: حماية الانهيار اليومي
+            if daily_pnl_pct() <= -CFG.max_daily_loss_pct or db.consecutive_losses() >= CFG.max_consecutive_losses: 
                 return
-            if db.consecutive_losses() >= CFG.max_consecutive_losses:
-                logger.critical(f"🛑 {CFG.max_consecutive_losses} خسائر متتالية — إيقاف مؤقت")
+
+            # 🛡️ البوابة 2: المزامنة الدقيقة بين قاعدة البيانات والمنصة
+            open_trades = [t for t in db.get_open_trades() if t["symbol"] == sym]
+            current_pos = get_pos(sym)
+            
+            if open_trades:
+                if not current_pos or current_pos == "ERROR":
+                    # تصحيح المزامنة: الداتا بيز تقول مفتوح، والمنصة تقول مغلق!
+                    logger.info(f"🔄 تصحيح مزامنة لـ {sym}: إغلاق الصفقة في القاعدة لعدم وجود مركز حقيقي.")
+                    try:
+                        price = exchange_public.fetch_ticker(sym)["last"]
+                    except:
+                        price = 0
+                    for t in open_trades:
+                        db.close_trade(t["id"], price, 0, 0, 0, "SYNC_FIX")
+                else:
+                    logger.info(f"🚫 تجاهل: توجد صفقة مفتوحة مسبقاً لـ {sym}.")
+                    return
+
+            # 🛡️ البوابة 3: التأكد من خلو المنصة من المراكز والأوامر
+            if current_pos and current_pos != "ERROR": 
                 return
-            open_db_trades = [t for t in db.get_open_trades() if t["symbol"] == sym]
-            if open_db_trades:
-                logger.info(f"⏳ تجاهل الإشارة: {sym} لديه صفقة مفتوحة بالفعل في قاعدة البيانات.")
+                
+            try:
+                open_orders = exchange.fetch_open_orders(sym)
+                if open_orders:
+                    logger.info(f"🚫 تجاهل لـ {sym}: توجد أوامر معلقة (LIMIT/STOP) لم تُنفذ.")
+                    return
+            except Exception:
+                pass
+
+            # 🛡️ البوابة 4: فترة التبريد وحدود التداول
+            if time.time() - st.get("t", 0) < CFG.cooldown_seconds: 
                 return
-            st = trade_state.setdefault(sym, {})
-            if time.time() - st.get("t", 0) < CFG.cooldown_seconds:
-                logger.info(f"⏳ تجاهل الإشارة: {sym} في فترة التبريد (Cooldown).")
+
+            if db.count_today() >= CFG.max_daily_trades or db.open_count() >= CFG.max_open_positions: 
                 return
-            pos = get_pos(sym)
-            if pos == "ERROR":
-                return
-            if pos:
-                logger.info(f"⏳ تجاهل الإشارة: {sym} مشغول (Busy) على المنصة.")
-                return
-            if db.count_today() >= CFG.max_daily_trades:
-                logger.info("🚫 تم الوصول للحد اليومي للصفقات")
-                return
-            if db.open_count() >= CFG.max_open_positions:
-                logger.info("🚫 تم الوصول للحد الأقصى للصفقات المفتوحة")
-                return
-            ticker = exchange_public.fetch_ticker(sym)
-            price = ticker["last"]
-            sl_p = max(0.5, min(final.sl_percent, CFG.max_sl_percent))
-            tp_p = max(1.0, min(final.tp_percent, CFG.max_tp_percent))
+
+            # 📊 حساب المخاطرة وحجم الصفقة (Risk Management)
+            price = exchange_public.fetch_ticker(sym)["last"]
             side = "buy" if final.decision == Decision.BUY else "sell"
-            pname = "LONG" if side == "buy" else "SHORT"
-            if side == "buy":
-                sl_price = price * (1 - sl_p / 100)
-                tp_price = price * (1 + tp_p / 100)
-            else:
-                sl_price = price * (1 + sl_p / 100)
-                tp_price = price * (1 - tp_p / 100)
+            
+            sl_price = price * (1 - final.sl_percent / 100) if side == "buy" else price * (1 + final.sl_percent / 100)
+            tp_price = price * (1 + final.tp_percent / 100) if side == "buy" else price * (1 - final.tp_percent / 100)
+            
             balance = get_balance()
-            if balance <= 0:
-                logger.critical("❌ الرصيد صفر أو غير متاح")
+            if balance <= 0: 
                 return
+                
             qty = position_size(balance, price, sl_price)
             qty = float(exchange.amount_to_precision(sym, qty))
-            if qty <= 0:
-                logger.info(f"⏳ حجم الصفقة صفر بعد حساب المخاطرة لـ {sym}")
+            if qty <= 0: 
                 return
-            logger.info(f"🚀 بدء التنفيذ {sym} | {pname} | السعر: {price} | Qty: {qty} | Bal: {balance:.2f}")
-            st["t"] = time.time()
+
+            # التنفيذ الوهمي (DRY_RUN)
             if CFG.dry_run:
-                logger.info(f"📝 DRY RUN — لم يتم تنفيذ صفقة حقيقية لـ {sym}")
-                tid = db.insert_trade(
-                    symbol=sym, side=pname, mode="DRY_RUN", entry_price=price,
-                    quantity=qty, sl_price=sl_price, tp_price=tp_price,
-                    sl_order_id="", tp_order_id="", entry_order_id="",
-                    confidence=final.final_score,
-                    reason=f"DRY | APEX={final.apex_score:.0f} AI={final.ai_score:.0f} Final={final.final_score:.1f}",
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    ai_explanation=final.ai_explanation, final_score=final.final_score,
-                    regime=final.regime, entry_quality=final.entry_quality,
-                    risk_score=final.risk_score, tf_alignment=final.tf_alignment)
-                logger.info(f"✅ DRY RUN Trade #{tid}")
+                st["t"] = time.time() # تسجيل الوقت للوهمي فوراً
+                db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price, confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
+                logger.info(f"✅ DRY RUN Trade Executed for {sym}")
                 return
+
+            # 🚀 التنفيذ الفعلي (LIVE)
             exchange.set_leverage(CFG.leverage, sym)
             order = exchange.create_market_order(sym, side, qty)
             eoid = order.get("id", "")
-            time.sleep(2)
-            p = get_pos(sym)
-            if p == "ERROR" or p is None:
-                logger.critical(f"❌ لم يتم العثور على المركز بعد فتحه لـ {sym}")
+            
+            # 🔍 الانتظار الذكي (Polling) لاصطياد المركز فور فتحه
+            p = None
+            for _ in range(10):  # محاولة لمدة 5 ثوانٍ كحد أقصى
+                p = get_pos(sym)
+                if p and p != "ERROR":
+                    break
+                time.sleep(0.5)
+                
+            if not p or p == "ERROR":
+                logger.critical(f"❌ خطأ حرج: لم يتم العثور على المركز بعد إرسال الطلب لـ {sym}")
                 return
+                
             entry = float(p.get("entryPrice", price))
             aqty = abs(float(p.get("contracts", 0)))
-            if aqty <= 0:
-                emergency_close(sym, "zero qty")
+            
+            if aqty <= 0: 
+                emergency_close(sym, "الكمية المفتوحة صفر")
                 return
-            if side == "buy":
-                sl_price = entry * (1 - sl_p / 100)
-                tp_price = entry * (1 + tp_p / 100)
-            else:
-                sl_price = entry * (1 + sl_p / 100)
-                tp_price = entry * (1 - tp_p / 100)
+
+            # إعادة معايرة الحماية بدقة بناءً على سعر الدخول الفعلي
+            sl_price = entry * (1 - final.sl_percent / 100) if side == "buy" else entry * (1 + final.sl_percent / 100)
+            tp_price = entry * (1 + final.tp_percent / 100) if side == "buy" else entry * (1 - final.tp_percent / 100)
+            
             sl_price = float(exchange.price_to_precision(sym, sl_price))
             tp_price = float(exchange.price_to_precision(sym, tp_price))
+            
             cs = "sell" if side == "buy" else "buy"
             sloid, tpoid = "", ""
+
+            # وضع أوامر الحماية (SL / TP)
             try:
-                slo = exchange.create_order(sym, "STOP_MARKET", cs, aqty, None,
-                                            {"stopPrice": sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
+                slo = exchange.create_order(sym, "STOP_MARKET", cs, aqty, None, {"stopPrice": sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
                 sloid = slo.get("id", "")
             except Exception as e:
                 logger.critical(f"SL fail: {e}")
-                emergency_close(sym, "SL fail")
+                emergency_close(sym, "فشل وضع SL")
                 return
+
             try:
-                tpo = exchange.create_order(sym, "TAKE_PROFIT_MARKET", cs, aqty, None,
-                                            {"stopPrice": tp_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
+                tpo = exchange.create_order(sym, "TAKE_PROFIT_MARKET", cs, aqty, None, {"stopPrice": tp_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
                 tpoid = tpo.get("id", "")
             except Exception as e:
                 logger.error(f"TP fail: {e}")
                 if sloid:
-                    try:
-                        exchange.cancel_order(sloid, sym)
-                    except Exception:
-                        pass
-                emergency_close(sym, "TP fail")
+                    try: exchange.cancel_order(sloid, sym)
+                    except: pass
+                emergency_close(sym, "فشل وضع TP")
                 return
-            tid = db.insert_trade(
-                symbol=sym, side=pname, mode="LIVE", entry_price=entry,
-                quantity=aqty, sl_price=sl_price, tp_price=tp_price,
-                sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid,
-                confidence=final.final_score,
-                reason=f"APEX={final.apex_score:.0f} AI={final.ai_score:.0f} Final={final.final_score:.1f}",
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                ai_explanation=final.ai_explanation, final_score=final.final_score,
-                regime=final.regime, entry_quality=final.entry_quality,
-                risk_score=final.risk_score, tf_alignment=final.tf_alignment)
-            logger.info(f"✅ تمت الصفقة بنجاح #{tid}")
+
+            # تسجيل التبريد فقط بعد النجاح التام للعملية
+            st["t"] = time.time()
+            
+            # تسجيل الصفقة في القاعدة
+            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
+            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry}")
+
         except Exception as e:
-            logger.error(f"Exec Error: {e}", exc_info=True)
+            logger.error(f"Exec Error: {e}")
             emergency_close(sym, str(e))
+            
+        finally:
+            # 🔓 تحرير قفل العملة لضمان عدم تجميدها مستقبلاً
+            st["executing"] = False
 
 
 class PositionMonitor:
