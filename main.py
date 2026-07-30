@@ -36,8 +36,8 @@ class Config:
     nvidia_api_key: str = "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"
     ai_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1.5"
     dry_run: bool = False
-    leverage: int = 10
-    margin_usdt: float = 10.0
+    leverage: int = 20.0
+    margin_usdt: float = 30.0
     max_daily_trades: int = 8
     max_open_positions: int = 1
     cooldown_seconds: int = 180
