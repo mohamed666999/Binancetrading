@@ -407,12 +407,9 @@ class Config:
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
-    
-    # --- Trailing Take Profit (Dynamic Profit Lock) ---
     trailing_enabled: bool = True
     trailing_activation: float = 80.0
     trailing_drop: float = 9.0
-
     max_daily_trades: int = 12
     max_open_positions: int = 2
     cooldown_seconds: int = 120
@@ -431,7 +428,6 @@ class Config:
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
     ai_min_veto_confidence: float = 80.0
-    # --- External Strategies (Project B / conor19w) ---
     use_external_strategies: bool = True
     external_strategies_list: List[str] = field(default_factory=lambda: ["candle_wick", "EMA_cross", "stochBB", "StochRSIMACD"])
     scanner_interval: int = 45
@@ -1624,17 +1620,18 @@ class MarketScanner:
 
         # -----------------------------------------------------
         # تشغيل الاستراتيجيات الخارجية (conor19w)
+        # ✅ تم الإصلاح: d_primary هي list عادية من ccxt وليست كائن OHLCV
         ext_decision = "HOLD"
         ext_conf = 0
         if CFG.use_external_strategies and EXTERNAL_AVAILABLE:
             candles_for_adapter = []
-            for i in range(len(d_primary.closes)):
+            for c in d_primary:
                 candles_for_adapter.append({
-                    "open": d_primary.opens[i],
-                    "high": d_primary.highs[i],
-                    "low": d_primary.lows[i],
-                    "close": d_primary.closes[i],
-                    "volume": d_primary.volumes[i]
+                    "open": float(c[1]),
+                    "high": float(c[2]),
+                    "low": float(c[3]),
+                    "close": float(c[4]),
+                    "volume": float(c[5])
                 })
             ext_signals = []
             for sname in CFG.external_strategies_list:
@@ -1655,13 +1652,11 @@ class MarketScanner:
         final.entry_quality = apex.composite_score
         final.tf_alignment = apex.bull_modules if apex.direction == Direction.LONG else apex.bear_modules
 
-        # هل الاستراتيجيات الخارجية تعارض قرارنا بقوة؟
         is_external_veto = False
         if CFG.use_external_strategies and EXTERNAL_AVAILABLE and ext_decision != "HOLD" and ext_conf >= 50:
             if apex.decision.value != ext_decision and apex.decision != Decision.WAIT:
                 is_external_veto = True
 
-        # اتخاذ القرار النهائي
         if apex.decision == Decision.WAIT:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
