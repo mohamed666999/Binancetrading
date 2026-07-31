@@ -12,6 +12,11 @@ Important:
   which is a sandboxed copy of strategy logic (no execution code copied).
 - Default behavior: lightweight heuristics for confidence mapping. You can
   refine per-strategy confidence later.
+
+This adapter applies a passive-weight multiplier to the confidence of
+external strategies (passive algorithms) so they exert stronger influence
+in the aggregation step. The multiplier is applied safely and clamped to
+0-100.
 """
 from typing import List, Dict, Any
 
@@ -19,6 +24,15 @@ from signals.signal import Signal
 
 # import the sandboxed, isolated copy of Project B strategies
 from strategies.external.conor19w import TradingStrats
+
+
+# Passive weight multiplier (hard-coded as requested).
+# NOTE: applied to the default confidence before returning Signal.
+PASSIVE_WEIGHT_MULTIPLIER = 1.8
+
+# Optional per-strategy weights (can be extended later). Keys are strategy
+# identifiers as returned in strategy_name (e.g. "conor19w.candle_wick")
+PASSIVE_WEIGHTS: Dict[str, float] = {}
 
 
 def _prepare_arrays(candles: List[Dict[str, Any]]):
@@ -56,6 +70,29 @@ def _default_confidence(mapped_decision: str) -> int:
     if mapped_decision == "HOLD":
         return 10
     return 60
+
+
+def _apply_passive_multiplier(strategy_name: str, orig_conf: int) -> int:
+    """Apply a passive multiplier for strategies that should have extra weight.
+
+    Rules:
+    - If a per-strategy weight exists in PASSIVE_WEIGHTS, use that.
+    - Otherwise, for strategies coming from conor19w (the external package),
+      apply the global PASSIVE_WEIGHT_MULTIPLIER.
+    - Clamp the resulting confidence to [0, 100].
+    """
+    weight = PASSIVE_WEIGHTS.get(strategy_name)
+    if weight is None:
+        # mark external conor19w strategies as passive and apply multiplier
+        if strategy_name.startswith("conor19w."):
+            weight = PASSIVE_WEIGHT_MULTIPLIER
+        else:
+            weight = 1.0
+    try:
+        new_conf = int(round(orig_conf * float(weight)))
+    except Exception:
+        new_conf = orig_conf
+    return max(0, min(100, new_conf))
 
 
 def call_strategy_by_name(name: str, candles: List[Dict], extra: Dict = None) -> Signal:
@@ -111,9 +148,14 @@ def call_strategy_by_name(name: str, candles: List[Dict], extra: Dict = None) ->
             mapped = _map_raw_direction(raw)
 
     conf = _default_confidence(mapped)
-    reason = f"wrapped from conor19w.{name} raw={raw}"
 
-    return Signal(decision=mapped, confidence=conf, strategy_name=f"conor19w.{name}", reason=reason)
+    # Apply passive multiplier / per-strategy weight
+    strategy_name = f"conor19w.{name}"
+    adjusted_conf = _apply_passive_multiplier(strategy_name, conf)
+
+    reason = f"wrapped from conor19w.{name} raw={raw} orig_conf={conf} adjusted_conf={adjusted_conf}"
+
+    return Signal(decision=mapped, confidence=adjusted_conf, strategy_name=strategy_name, reason=reason)
 
 
 def list_available_strategies() -> List[str]:
