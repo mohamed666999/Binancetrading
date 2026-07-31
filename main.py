@@ -11,6 +11,7 @@
 ║  • Layer 5: Regime Classifier (9 regimes, adaptive weights)  ║
 ║  • Layer 6: Multi-Timeframe Alignment                        ║
 ║  • Layer 7: AI Veto / Explainer (15% weight)                 ║
+║  • Layer 8: External Strategies Veto (conor19w)              ║
 ║                                                              ║
 ║  Merged from: APEX v1 + MSSI v2 + APEX v3 Technical Layer    ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -25,6 +26,14 @@ from enum import Enum
 import websockets, ccxt, requests
 from flask import Flask, jsonify, render_template_string
 from openai import OpenAI
+
+# --- External Strategies Integration (Project B / conor19w) ---
+try:
+    from adapters.conor19w_adapter import call_strategy_by_name
+    from signals.aggregator import aggregate_signals
+    EXTERNAL_AVAILABLE = True
+except ImportError:
+    EXTERNAL_AVAILABLE = False
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -422,6 +431,9 @@ class Config:
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
     ai_min_veto_confidence: float = 80.0
+    # --- External Strategies (Project B / conor19w) ---
+    use_external_strategies: bool = True
+    external_strategies_list: List[str] = field(default_factory=lambda: ["candle_wick", "EMA_cross", "stochBB", "StochRSIMACD"])
     scanner_interval: int = 45
     scanner_top_n: int = 12
     scanner_min_volume_usdt: float = 3_000_000
@@ -1167,14 +1179,12 @@ class PositionMonitor:
         open_trades = self.db.get_open_trades()
         if not open_trades:
             return
-
         try:
             symbols = list(set([t['symbol'] for t in open_trades]))
             tickers = self.exchange.fetch_tickers(symbols)
         except Exception as e:
             logger.error(f"Monitor fetch error: {e}")
             return
-
         for trade in open_trades:
             tid = trade['id']
             symbol = trade['symbol']
@@ -1183,16 +1193,12 @@ class PositionMonitor:
             tp_price = trade['tp_price']
             sl_price = trade['sl_price']
             qty = trade['quantity']
-
             if symbol not in tickers:
                 continue
-
             current_price = tickers[symbol]['last']
-            
             if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
                 self.close_trade(trade, current_price, "STOP_LOSS")
                 continue
-
             if self.cfg.trailing_enabled:
                 if side == "LONG":
                     current_distance = current_price - entry_price
@@ -1200,22 +1206,16 @@ class PositionMonitor:
                 else:
                     current_distance = entry_price - current_price
                     tp_distance = entry_price - tp_price
-
                 progress = (current_distance / tp_distance) * 100.0 if tp_distance > 0 else 0.0
-
                 if tid not in self.trailing_peaks:
                     self.trailing_peaks[tid] = 0.0
-
                 if progress > self.trailing_peaks[tid]:
                     self.trailing_peaks[tid] = progress
-
                 peak = self.trailing_peaks[tid]
-
                 if peak >= self.cfg.trailing_activation:
                     if progress <= (peak - self.cfg.trailing_drop):
                         self.close_trade(trade, current_price, "TRAILING_TAKE_PROFIT")
                         continue
-            
             if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
                 self.close_trade(trade, current_price, "TAKE_PROFIT")
 
@@ -1225,7 +1225,6 @@ class PositionMonitor:
         side = trade['side']
         qty = trade['quantity']
         entry_price = trade['entry_price']
-
         try:
             if not self.cfg.dry_run:
                 close_side = 'sell' if side == 'LONG' else 'buy'
@@ -1233,49 +1232,35 @@ class PositionMonitor:
         except Exception as e:
             logger.error(f"Exchange API error closing trade {tid}: {e}")
             return
-
         if side == "LONG":
             pnl = (exit_price - entry_price) * qty
             pnl_pct = ((exit_price - entry_price) / entry_price) * 100
         else:
             pnl = (entry_price - exit_price) * qty
             pnl_pct = ((entry_price - exit_price) / entry_price) * 100
-
-        self.db.close_trade(
-            tid=tid,
-            ep=exit_price,
-            rpnl=pnl,
-            pp=pnl_pct,
-            comm=0.0,
-            reason=reason
-        )
-        
+        self.db.close_trade(tid=tid, ep=exit_price, rpnl=pnl, pp=pnl_pct, comm=0.0, reason=reason)
         logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
-
         if tid in self.trailing_peaks:
             del self.trailing_peaks[tid]
 
-    def _cancel(self, sym, trade):  
-        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")  
-        orders_to_cancel = [  
-            ("SL", trade.get("sl_order_id")),   
-            ("TP", trade.get("tp_order_id"))  
-        ]  
-        for order_type, oid in orders_to_cancel:  
-            if not oid:   
-                continue  
-            try:  
+    def _cancel(self, sym, trade):
+        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")
+        orders_to_cancel = [("SL", trade.get("sl_order_id")), ("TP", trade.get("tp_order_id"))]
+        for order_type, oid in orders_to_cancel:
+            if not oid:
+                continue
+            try:
                 order = self.exchange.fetch_order(oid, sym)
                 if order.get("status") == "open":
-                    self.exchange.cancel_order(oid, sym)  
+                    self.exchange.cancel_order(oid, sym)
                     logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
                 else:
                     logger.info(f"ℹ️ طلب {order_type} غير مفتوح (حالة: {order.get('status')})، لا حاجة للحذف.")
-            except Exception as e:  
+            except Exception as e:
                 err_str = str(e)
-                if "-2011" in err_str or "Unknown order" in err_str or "Order does not exist" in err_str:  
-                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")  
-                else:  
+                if "-2011" in err_str or "Unknown order" in err_str or "Order does not exist" in err_str:
+                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")
+                else:
                     logger.error(f"⚠️ خطأ غير متوقع أثناء حذف طلب {order_type}: {e}")
 
 
@@ -1407,7 +1392,6 @@ class AIAnalyst:
         result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
         if not CFG.use_ai_veto and not CFG.use_ai_explainer:
             return result
-        reasons_text = "\n".join(apex_out.reasons[:6])
         prompt = f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
 
 العملة: {symbol}
@@ -1637,6 +1621,29 @@ class MarketScanner:
         for r in apex.reasons:
             logger.info(f"   {r}")
         ai = ai_analyst.analyze(sym, apex)
+
+        # -----------------------------------------------------
+        # تشغيل الاستراتيجيات الخارجية (conor19w)
+        ext_decision = "HOLD"
+        ext_conf = 0
+        if CFG.use_external_strategies and EXTERNAL_AVAILABLE:
+            candles_for_adapter = []
+            for i in range(len(d_primary.closes)):
+                candles_for_adapter.append({
+                    "open": d_primary.opens[i],
+                    "high": d_primary.highs[i],
+                    "low": d_primary.lows[i],
+                    "close": d_primary.closes[i],
+                    "volume": d_primary.volumes[i]
+                })
+            ext_signals = []
+            for sname in CFG.external_strategies_list:
+                sig = call_strategy_by_name(sname, candles_for_adapter)
+                ext_signals.append(sig)
+            ext_decision, ext_conf, ext_details = aggregate_signals(ext_signals)
+            logger.info(f"🌐 External [{sym}]: {ext_decision} | Conf={ext_conf}")
+        # -----------------------------------------------------
+
         final = FinalDecision()
         final.sl_percent = apex.sl_percent
         final.tp_percent = apex.tp_percent
@@ -1647,22 +1654,39 @@ class MarketScanner:
         final.risk_score = 50.0
         final.entry_quality = apex.composite_score
         final.tf_alignment = apex.bull_modules if apex.direction == Direction.LONG else apex.bear_modules
+
+        # هل الاستراتيجيات الخارجية تعارض قرارنا بقوة؟
+        is_external_veto = False
+        if CFG.use_external_strategies and EXTERNAL_AVAILABLE and ext_decision != "HOLD" and ext_conf >= 50:
+            if apex.decision.value != ext_decision and apex.decision != Decision.WAIT:
+                is_external_veto = True
+
+        # اتخاذ القرار النهائي
         if apex.decision == Decision.WAIT:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
             final.reasons = [f"APEX WAIT | Regime={apex.regime.value}"] + apex.reasons
+
+        elif is_external_veto:
+            final.decision = Decision.WAIT
+            final.final_score = apex.confidence
+            final.reasons = [f"🛑 EXTERNAL VETO | Ext says {ext_decision} ({ext_conf})"] + apex.reasons
+
         elif ai["error"]:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
             final.final_score = apex.confidence
             final.reasons = [f"APEX {apex.decision.value} (AI_ERROR) | Conf={apex.confidence:.1f}"] + apex.reasons
+
         elif CFG.use_ai_veto and ai["decision"] == "WAIT" and ai["confidence"] >= CFG.ai_min_veto_confidence:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
-            final.reasons = [f"AI VETO (conf={ai['confidence']}) | APEX was {apex.decision.value}"] + apex.reasons
+            final.reasons = [f"🛑 AI VETO (conf={ai['confidence']}) | APEX was {apex.decision.value}"] + apex.reasons
+
         else:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
-            final.final_score = apex.confidence * 0.85 + ai["confidence"] * 0.15
-            final.reasons = [f"APEX {apex.decision.value} | Score={final.final_score:.1f} | AI={ai['decision']}({ai['confidence']})"] + apex.reasons
+            final.final_score = (apex.confidence * 0.75) + (ai["confidence"] * 0.15) + (ext_conf * 0.10)
+            final.reasons = [f"✅ APEX {apex.decision.value} | AI={ai['decision']}({ai['confidence']}) | Ext={ext_decision}({ext_conf})"] + apex.reasons
+
         logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | {final.reasons[0] if final.reasons else ''}")
         bot_stats["last_analysis"][sym] = {
             "decision": final.decision.value,
@@ -1910,6 +1934,7 @@ def main():
     logger.info(f"   Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
+    logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
     logger.info(f"   DB: {CFG.db_path}")
     logger.info("=" * 60)
     threading.Thread(target=run_server, daemon=True).start()
