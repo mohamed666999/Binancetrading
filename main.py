@@ -17,7 +17,7 @@
 ╚══════════════════════════════════════════════════════════════╝
 """
 
-import asyncio, json, time, threading, math, os, sqlite3, logging
+import .asyncio, json, time, threading, math, os, sqlite3, logging
 from collections import deque, defaultdict
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
