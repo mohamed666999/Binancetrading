@@ -10,7 +10,7 @@
 ║  • Layer 4: Derivatives Intelligence (OI/Funding/LSR/Flow)   ║
 ║  • Layer 5: Regime Classifier (9 regimes, adaptive weights)  ║
 ║  • Layer 6: Multi-Timeframe Alignment                        ║
-║  • Layer 7: AI Dual-Model Consensus (Mixtral + GPT-OSS)      ║
+║  • Layer 7: AI Race (Mistral + MiniMax-M3 — الأسرع يفوز)     ║
 ║  • Layer 8: External Strategies Veto (conor19w)              ║
 ║                                                              ║
 ║  Merged from: APEX v1 + MSSI v2 + APEX v3 Technical Layer    ║
@@ -403,27 +403,20 @@ class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
     # ══════════════════════════════════════════════════════════
-    # ✅ إعدادات الذكاء الاصطناعي المزدوج (Dual-Model Consensus)
-    #    النموذج الأول: Mixtral 8x7B (سريع — للقرار الأولي)
-    #    النموذج الثاني: GPT-OSS-20B (أقوى — للمراجعة والتحسين)
+    # ✅ إعدادات الذكاء الاصطناعي المزدوج (AI Race — الأسرع يفوز)
+    #    النموذج 1: Mistral Medium (الحالي)
+    #    النموذج 2: MiniMax-M3 (الجديد) — نأخذ إجابة الأسرع
     # ══════════════════════════════════════════════════════════
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
-    ai_model: str = "mistralai/mixtral-8x7b-instruct"   # النموذج الأول (Mixtral — السرعة)
-    # ✅ النموذج الثاني: GPT-OSS (المفتاح الجديد)
-    nvidia_api_key_oss: str = os.getenv("NVIDIA_API_KEY_OSS", "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")
-    ai_model_oss: str = "openai/gpt-oss-20b"            # النموذج الثاني (GPT-OSS — القوة)
-    # مهل الانتظار للاستدعاء المتوازي
-    ai_first_timeout: float = 2.0    # انتظار أول رد (ثانية)
-    ai_second_timeout: float = 2.0   # انتظار النموذج الآخر (ثانية) → إجمالي 4
-    ai_upgrade_margin: float = 10.0  # هامش الثقة لاستبدال القرار (%)
+    ai_model: str = "mistralai/mistral-medium-3.5-128b"
+    # ✅ النموذج الثاني: MiniMax-M3 (المفتاح الجديد)
+    nvidia_api_key_minimax: str = os.getenv("NVIDIA_API_KEY_MINIMAX", "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")
+    ai_model_minimax: str = "minimaxai/minimax-m3"
+    ai_race_timeout: float = 10.0   # مهلة انتظار أول رد ناجح (ثانية)
+    sl_max_retries: int = 3         # عدد محاولات وضع وقف الخسارة
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
-    # ══════════════════════════════════════════════════════════
-    # ✅ إعدادات المستويات الأربعة الهرمية (Tier System)
-    # المستويات: 1 (عادي)، 2 (متوسط)، 3 (متقدم)، 4 (قناص ذهبي)
-    # ══════════════════════════════════════════════════════════
-    tier_levels_enabled: bool = True
     trailing_enabled: bool = True
     trailing_activation: float = 80.0
     trailing_drop: float = 9.0
@@ -435,13 +428,10 @@ class Config:
     min_rr_ratio: float = 2.0
     max_daily_loss_pct: float = 4.0
     max_consecutive_losses: int = 4
-    # ══════════════════════════════════════════════════════════
-    # ✅ تخفيف الفلاتر قليلاً لزيادة الفرص المتاحة
-    # ══════════════════════════════════════════════════════════
-    min_signal_score: float = 52.0    # (كانت 58.0)
-    min_confidence: float = 45.0      # (كانت 52.0)
-    min_module_agreement: int = 3     # (كانت 4)
-    min_entry_quality: float = 48.0   # (كانت 52.0)
+    min_signal_score: float = 58.0
+    min_confidence: float = 52.0
+    min_module_agreement: int = 4
+    min_entry_quality: float = 52.0
     max_risk_for_entry: float = 48.0
     min_momentum_score: float = 45.0
     min_trend_alignment: int = 2
@@ -478,18 +468,6 @@ class Config:
 
 
 CFG = Config()
-
-
-# ══════════════════════════════════════════════════════════════
-# ✅ Reason Codes Reference (مرجعية أكواد أسباب الرفض)
-# ══════════════════════════════════════════════════════════════
-# POSITION_ALREADY_OPEN
-# MANUAL_PENDING_ORDER
-# MAX_DAILY_LOSS_REACHED
-# MAX_CONSECUTIVE_LOSSES_REACHED
-# MAX_DAILY_TRADES_REACHED
-# MAX_OPEN_POSITIONS_REACHED
-# ══════════════════════════════════════════════════════════════
 
 
 class Direction(Enum):
@@ -1185,12 +1163,12 @@ class PositionMonitor:
         self.exchange = exchange
         self.db = db_instance
         self.cfg = config
-        self.trailing_peaks: Dict[str, float] = {}  # الاعتماد على رمز العملة
+        self.trailing_peaks: Dict[int, float] = {}
         self._run = True
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
-        logger.info("Stateless Position Monitor started (Binance API Driven)")
+        logger.info("Position Monitor started")
 
     def stop(self):
         self._run = False
@@ -1198,38 +1176,35 @@ class PositionMonitor:
     def _loop(self):
         while self._run:
             try:
-                self.monitor_live_positions()
+                self.monitor_open_trades()
             except Exception as e:
                 logger.error(f"Monitor loop error: {e}")
             time.sleep(self.cfg.monitor_interval)
 
-    def monitor_live_positions(self):
-        # 1. جلب الصفقات المفتوحة فعلياً من بينانس مباشرة
+    def monitor_open_trades(self):
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return
         try:
-            positions = self.exchange.fetch_positions()
-            active_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
+            symbols = list(set([t['symbol'] for t in open_trades]))
+            tickers = self.exchange.fetch_tickers(symbols)
         except Exception as e:
-            logger.error(f"Failed to fetch live positions: {e}")
+            logger.error(f"Monitor fetch error: {e}")
             return
-
-        if not active_positions:
-            return
-
-        for p in active_positions:
-            symbol = p['symbol']
-            side = p['side'].upper()  # 'LONG' or 'SHORT'
-            qty = float(p['contracts'])
-            entry_price = float(p['entryPrice'])
-
-            try:
-                current_price = self.exchange.fetch_ticker(symbol)['last']
-            except Exception:
+        for trade in open_trades:
+            tid = trade['id']
+            symbol = trade['symbol']
+            side = trade['side']
+            entry_price = trade['entry_price']
+            tp_price = trade['tp_price']
+            sl_price = trade['sl_price']
+            qty = trade['quantity']
+            if symbol not in tickers:
                 continue
-
-            # حساب الأهداف الوهمية لتتبع الأرباح
-            tp_price = entry_price * (1 + self.cfg.max_tp_percent / 100) if side == "LONG" else entry_price * (1 - self.cfg.max_tp_percent / 100)
-
-            # نظام تتبع الأرباح الحي (Trailing Stop)
+            current_price = tickers[symbol]['last']
+            if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
+                self.close_trade(trade, current_price, "STOP_LOSS")
+                continue
             if self.cfg.trailing_enabled:
                 if side == "LONG":
                     current_distance = current_price - entry_price
@@ -1237,51 +1212,62 @@ class PositionMonitor:
                 else:
                     current_distance = entry_price - current_price
                     tp_distance = entry_price - tp_price
-
                 progress = (current_distance / tp_distance) * 100.0 if tp_distance > 0 else 0.0
-
-                if symbol not in self.trailing_peaks:
-                    self.trailing_peaks[symbol] = 0.0
-                if progress > self.trailing_peaks[symbol]:
-                    self.trailing_peaks[symbol] = progress
-
-                peak = self.trailing_peaks[symbol]
-
-                # الإغلاق الآلي عند التراجع من القمة
+                if tid not in self.trailing_peaks:
+                    self.trailing_peaks[tid] = 0.0
+                if progress > self.trailing_peaks[tid]:
+                    self.trailing_peaks[tid] = progress
+                peak = self.trailing_peaks[tid]
                 if peak >= self.cfg.trailing_activation:
                     if progress <= (peak - self.cfg.trailing_drop):
-                        logger.info(f"🚀 Trailing Stop Activated for {symbol}! Securing profit.")
-                        self.close_position_direct(symbol, side, qty, current_price, "TRAILING_TAKE_PROFIT")
+                        self.close_trade(trade, current_price, "TRAILING_TAKE_PROFIT")
                         continue
+            if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
+                self.close_trade(trade, current_price, "TAKE_PROFIT")
 
-    def close_position_direct(self, symbol, side, qty, exit_price, reason):
+    def close_trade(self, trade, exit_price, reason):
+        tid = trade['id']
+        symbol = trade['symbol']
+        side = trade['side']
+        qty = trade['quantity']
+        entry_price = trade['entry_price']
         try:
-            # 1. إغلاق الصفقة بسعر السوق
-            close_side = 'sell' if side == 'LONG' else 'buy'
-            self.exchange.create_market_order(symbol, close_side, qty, params={"reduceOnly": True})
-            logger.info(f"✅ تم إغلاق صفقة {symbol} بسبب: {reason}")
-
-            # 2. تنظيف كل الطلبات الشبحية فوراً (أهم سطر لحل مشكلتك)
-            self.exchange.cancel_all_orders(symbol)
-            logger.info(f"🧹 تم تنظيف جميع الطلبات المعلقة المرتبطة بعملة {symbol}")
-
-            if symbol in self.trailing_peaks:
-                del self.trailing_peaks[symbol]
-
-            # تحديث الداتا بيز للتسجيل فقط (Logging)
-            open_trades = [t for t in self.db.get_open_trades() if t["symbol"] == symbol]
-            for t in open_trades:
-                entry = t['entry_price']
-                if side == "LONG":
-                    pnl = (exit_price - entry) * qty
-                    pnl_pct = ((exit_price - entry) / entry) * 100
-                else:
-                    pnl = (entry - exit_price) * qty
-                    pnl_pct = ((entry - exit_price) / entry) * 100
-                self.db.close_trade(t['id'], exit_price, pnl, pnl_pct, 0.0, reason)
-
+            if not self.cfg.dry_run:
+                close_side = 'sell' if side == 'LONG' else 'buy'
+                self.exchange.create_market_order(symbol, close_side, qty)
         except Exception as e:
-            logger.error(f"Error closing position {symbol}: {e}")
+            logger.error(f"Exchange API error closing trade {tid}: {e}")
+            return
+        if side == "LONG":
+            pnl = (exit_price - entry_price) * qty
+            pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        else:
+            pnl = (entry_price - exit_price) * qty
+            pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+        self.db.close_trade(tid=tid, ep=exit_price, rpnl=pnl, pp=pnl_pct, comm=0.0, reason=reason)
+        logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
+        if tid in self.trailing_peaks:
+            del self.trailing_peaks[tid]
+
+    def _cancel(self, sym, trade):
+        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")
+        orders_to_cancel = [("SL", trade.get("sl_order_id")), ("TP", trade.get("tp_order_id"))]
+        for order_type, oid in orders_to_cancel:
+            if not oid:
+                continue
+            try:
+                order = self.exchange.fetch_order(oid, sym)
+                if order.get("status") == "open":
+                    self.exchange.cancel_order(oid, sym)
+                    logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
+                else:
+                    logger.info(f"ℹ️ طلب {order_type} غير مفتوح (حالة: {order.get('status')})، لا حاجة للحذف.")
+            except Exception as e:
+                err_str = str(e)
+                if "-2011" in err_str or "Unknown order" in err_str or "Order does not exist" in err_str:
+                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")
+                else:
+                    logger.error(f"⚠️ خطأ غير متوقع أثناء حذف طلب {order_type}: {e}")
 
 
 app = Flask(__name__)
@@ -1408,11 +1394,9 @@ def position_size(balance, entry, sl):
 
 
 # ══════════════════════════════════════════════════════════════
-# ✅ محلل الذكاء الاصطناعي المزدوج (Dual-Model Consensus)
-#    Mixtral 8x7B (سريع) + GPT-OSS-20B (قوي) يعملان بالتوازي
-#    - أول رد خلال 2 ثانية يُعتمد
-#    - إذا وصل النموذج الآخر خلال 2 ثانية إضافية وكان أكثر ثقة
-#      بـ 10%، يتم استبدال القرار قبل التنفيذ
+# ✅ محلل الذكاء الاصطناعي المزدوج (AI Race — الأسرع يفوز)
+#    Mistral Medium + MiniMax-M3 يعملان بالتوازي، وأول رد ناجح
+#    يُعتمد فوراً ويتم تجاهل النموذج الآخر.
 # ══════════════════════════════════════════════════════════════
 class AIAnalyst:
     INVOKE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -1439,7 +1423,7 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 أجب JSON فقط:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
 
-    def _call_model_sync(self, prompt, model, api_key, label):
+    def _call_model_sync(self, prompt, model, api_key, label, system_msg="/think", extra_payload=None):
         """استدعاء متزامن لنموذج واحد عبر NVIDIA API (يعيد dict أو None عند الفشل)"""
         try:
             headers = {
@@ -1448,17 +1432,18 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
             }
             payload = {
                 "messages": [
-                    {"role": "system", "content": "/think"},
+                    {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt}
                 ],
                 "model": model,
-                "reasoning_effort": "high",
                 "max_tokens": 16384,
                 "stream": False,
                 "temperature": 0.7,
                 "top_p": 1
             }
-            response = requests.post(self.INVOKE_URL, headers=headers, json=payload, timeout=8)
+            if extra_payload:
+                payload.update(extra_payload)
+            response = requests.post(self.INVOKE_URL, headers=headers, json=payload, timeout=12)
             resp_json = response.json()
             raw = resp_json["choices"][0]["message"]["content"] or ""
             cleaned = raw.strip()
@@ -1484,65 +1469,51 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
             logger.warning(f"AI [{label}] ERROR: {e}")
             return None
 
-    async def _call_model_async(self, prompt, model, api_key, label):
+    async def _call_model_async(self, prompt, model, api_key, label, system_msg="/think", extra_payload=None):
         """تشغيل الاستدعاء المتزامن في thread منفصل لتحقيق التوازي الحقيقي"""
-        return await asyncio.to_thread(self._call_model_sync, prompt, model, api_key, label)
+        return await asyncio.to_thread(
+            self._call_model_sync, prompt, model, api_key, label, system_msg, extra_payload)
 
-    async def _get_ai_decision(self, prompt):
-        # إطلاق النموذجين بالتوازي
-        task_mixtral = asyncio.create_task(
-            self._call_model_async(prompt, CFG.ai_model, CFG.nvidia_api_key, "MIXTRAL"))
-        task_gptoss = asyncio.create_task(
-            self._call_model_async(prompt, CFG.ai_model_oss, CFG.nvidia_api_key_oss, "GPT-OSS"))
+    async def _race_ai_decision(self, prompt):
+        # النموذج 1: Mistral Medium (الحالي)
+        task_mistral = asyncio.create_task(
+            self._call_model_async(prompt, CFG.ai_model, CFG.nvidia_api_key, "MISTRAL"))
+        # النموذج 2: MiniMax-M3 (الجديد) — مع إعداداته الخاصة (thinking_mode disabled)
+        task_minimax = asyncio.create_task(
+            self._call_model_async(
+                prompt, CFG.ai_model_minimax, CFG.nvidia_api_key_minimax, "MINIMAX-M3",
+                system_msg="You are an expert crypto trading analyst. Respond with JSON only.",
+                extra_payload={
+                    "temperature": 1,
+                    "top_p": 0.95,
+                    "max_tokens": 7425,
+                    "chat_template_kwargs": {"thinking_mode": "disabled"},
+                }))
 
-        # المرحلة 1: انتظار أول رد خلال 2 ثانية
-        done, pending = await asyncio.wait(
-            [task_mixtral, task_gptoss],
-            timeout=CFG.ai_first_timeout,
-            return_when=asyncio.FIRST_COMPLETED
-        )
+        pending = {task_mistral, task_minimax}
+        deadline = time.time() + CFG.ai_race_timeout
 
-        if done:
-            first_task = list(done)[0]
-            first = first_task.result()
-            other_task = task_gptoss if first_task is task_mixtral else task_mixtral
-
-            # إذا فشل الأول (None)، ننتظر الثاني
-            if first is None:
+        # الأسرع يفوز: ننتظر أول رد ناجح ونتجاهل الباقي
+        while pending:
+            remaining = max(0.1, deadline - time.time())
+            done, pending = await asyncio.wait(
+                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
                 try:
-                    second = await asyncio.wait_for(other_task, timeout=CFG.ai_second_timeout)
-                    return second
-                except asyncio.TimeoutError:
-                    return None
+                    res = t.result()
+                except Exception:
+                    res = None
+                if res is not None:
+                    # أول رد ناجح → نعتمده ونلغي النموذج الآخر
+                    for p in pending:
+                        p.cancel()
+                    return res
+            if time.time() >= deadline:
+                break
 
-            # المرحلة 2: انتظر النموذج الآخر حتى 2 ثانية إضافية
-            try:
-                second = await asyncio.wait_for(other_task, timeout=CFG.ai_second_timeout)
-                # إذا كان الثاني أكثر ثقة بهامش محدد، استبدل القرار
-                if second and second.get("confidence", 0) > first.get("confidence", 0) + CFG.ai_upgrade_margin:
-                    logger.info(
-                        f"🔁 AI UPGRADE: {second.get('model')} (Conf={second['confidence']:.0f}) "
-                        f"replaces {first.get('model')} (Conf={first['confidence']:.0f})")
-                    return second
-            except asyncio.TimeoutError:
-                pass
-            return first
-
-        # لم يجب أحد خلال 2 ثانية → انتظر 2 ثانية إضافية (إجمالي 4)
-        done, pending = await asyncio.wait(
-            [task_mixtral, task_gptoss],
-            timeout=CFG.ai_second_timeout,
-            return_when=asyncio.FIRST_COMPLETED
-        )
-        if done:
-            res = list(done)[0].result()
-            for t in pending:
-                t.cancel()
-            return res
-
-        # إلغاء كل المهام المعلقة
-        for t in pending:
-            t.cancel()
+        # انتهاء المهلة دون رد ناجح → إلغاء الكل
+        for p in pending:
+            p.cancel()
         return None
 
     def analyze(self, symbol, apex_out):
@@ -1551,13 +1522,13 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
             return result
         prompt = self._build_prompt(symbol, apex_out)
         try:
-            chosen = asyncio.run(self._get_ai_decision(prompt))
+            chosen = asyncio.run(self._race_ai_decision(prompt))
             if chosen is None:
                 result["decision"] = "WAIT"
                 result["confidence"] = 0
                 result["error"] = True
-                result["explanation"] = "AI_ERROR: both models timeout/failed"
-                logger.warning(f"AI {symbol}: BOTH MODELS FAILED/TIMEOUT")
+                result["explanation"] = "AI_ERROR: all models timeout/failed"
+                logger.warning(f"AI {symbol}: ALL MODELS FAILED/TIMEOUT")
                 return result
             result = {
                 "decision": chosen.get("decision", "WAIT"),
@@ -1567,7 +1538,7 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
                 "error": chosen.get("error", False),
             }
             logger.info(
-                f"AI {symbol} [{chosen.get('model')}]: {result['decision']} | "
+                f"AI {symbol} [{chosen.get('model')} ⚡]: {result['decision']} | "
                 f"Conf={result['confidence']} | {result['explanation'][:80]}")
         except Exception as e:
             logger.warning(f"AI ERROR {symbol}: {e}")
@@ -1634,75 +1605,6 @@ trade_state = {}
 execution_lock = threading.Lock()
 active_symbols = {}
 active_lock = threading.Lock()
-
-
-# ══════════════════════════════════════════════════════════════
-# ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool & Ranking)
-#    يجمع الفرص، يحسب Opportunity Score المركب، يرتبها، وينفذ الأفضل
-#    أو يدخل فوراً إذا كانت الفرصة استثنائية (Score ≥ 96)
-# ══════════════════════════════════════════════════════════════
-class OpportunityPool:
-    def __init__(self, max_size=5, ttl_seconds=90):
-        self.pool = []  # قائمة لتخزين الفرص المتاحة
-        self.max_size = max_size
-        self.ttl_seconds = ttl_seconds
-        self.lock = threading.Lock()
-
-    def add_or_update(self, symbol, final, apex_out):
-        with self.lock:
-            # التأكد من عدم تكرار نفس العملة في الـ Pool
-            self.pool = [item for item in self.pool if item["symbol"] != symbol]
-
-            # حساب المؤشر المركب للفرصة (Opportunity Score)
-            # 40% Final Score + 25% Confidence + 15% Risk/Reward + 10% Volume Quality + 10% Momentum
-            rr_val = getattr(apex_out, 'rr_ratio', 2.0)
-            rr_score = clamp((rr_val / 4.0) * 100, 0, 100)
-            vol_quality = 70.0 if getattr(apex_out, 'volume_spike', False) else 50.0
-            momentum_score = 60.0  # قيمة اعتبارية أو مستخرجة من الزخم
-
-            opp_score = (
-                (final.final_score * 0.40) +
-                (apex_out.confidence * 0.25) +
-                (rr_score * 0.15) +
-                (vol_quality * 0.10) +
-                (momentum_score * 0.10)
-            )
-
-            item = {
-                "symbol": symbol,
-                "final": final,
-                "apex": apex_out,
-                "opp_score": opp_score,
-                "timestamp": time.time()
-            }
-
-            self.pool.append(item)
-            # ترتيب القناص التنافسي تنازلياً حسب الـ Opportunity Score
-            self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
-
-            # الحفاظ على الحد الأقصى للحجم (لا تجمع أكثر من 5 فرص)
-            if len(self.pool) > self.max_size:
-                self.pool = self.pool[:self.max_size]
-
-    def clean_expired(self):
-        with self.lock:
-            now = time.time()
-            # إزالة الفرص التي تجاوزت مدة الصلاحية (TTL)
-            self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
-
-    def get_best_opportunity(self):
-        with self.lock:
-            now = time.time()
-            # إزالة الفرص المنتهية داخلياً
-            self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
-            if not self.pool:
-                return None
-            # إعادة ترتيب وتصدير أفضل فرصة
-            self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
-            return self.pool.pop(0)  # أخذها وحذفها من القائمة بعد التنفيذ
-
-
-opp_pool = OpportunityPool(max_size=5, ttl_seconds=90)
 
 
 class MarketScanner:
@@ -1814,6 +1716,9 @@ class MarketScanner:
             logger.info(f"   {r}")
         ai = ai_analyst.analyze(sym, apex)
 
+        # -----------------------------------------------------
+        # تشغيل الاستراتيجيات الخارجية (conor19w)
+        # ✅ تم الإصلاح: d_primary هي list عادية من ccxt وليست كائن OHLCV
         ext_decision = "HOLD"
         ext_conf = 0
         if CFG.use_external_strategies and EXTERNAL_AVAILABLE:
@@ -1832,6 +1737,7 @@ class MarketScanner:
                 ext_signals.append(sig)
             ext_decision, ext_conf, ext_details = aggregate_signals(ext_signals)
             logger.info(f"🌐 External [{sym}]: {ext_decision} | Conf={ext_conf}")
+        # -----------------------------------------------------
 
         final = FinalDecision()
         final.sl_percent = apex.sl_percent
@@ -1888,32 +1794,7 @@ class MarketScanner:
         if final.final_score < CFG.min_confidence:
             logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}")
             return
-
-        # ══════════════════════════════════════════════════════════
-        # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool)
-        # ══════════════════════════════════════════════════════════
-        # فحص ما إذا كانت الفرصة "استثنائية" لتجاوز الانتظار والدخول الفوري
-        is_explosive_sniper = (final.final_score >= 96.0 and apex.confidence >= 97.0)
-
-        if is_explosive_sniper:
-            logger.critical(f"⚡ [EXPLOSIVE SNIPER TRIGGERED] التنفيذ الفوري لعملة {sym} | Score={final.final_score:.1f}")
-            execute_trade(sym, final)
-            return
-
-        # خلاف ذلك، أضفها إلى حوض التجميع التنافسي (Opportunity Pool)
-        opp_pool.add_or_update(sym, final, apex)
-
-        # محاولة اختيار أفضل فرصة متاح تنفيذها الآن بشرط عدم وجود سيولة مستنزفة
-        best_opp = opp_pool.get_best_opportunity()
-        if best_opp:
-            # التحقق من أن رأس المال / المراكز المفتوحة تسمح
-            if db.open_count() < CFG.max_open_positions:
-                logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] اختيار أفضل فرصة بالسوق: {best_opp['symbol']} بقيمة OppScore={best_opp['opp_score']:.1f}")
-                execute_trade(best_opp["symbol"], best_opp["final"])
-            else:
-                # إذا كانت المراكز ممتلئة، نعيد إضافتها بحذر أو نتجاوز مؤقتاً
-                pass
-        # ══════════════════════════════════════════════════════════
+        execute_trade(sym, final)
 
     def _load(self, sk, sym):
         for tf in CFG.timeframes:
@@ -1972,6 +1853,47 @@ def emergency_close(sym, reason):
         logger.critical(f"❌ فشل إغلاق الصفقة (Emergency fail): {e}")
 
 
+# ══════════════════════════════════════════════════════════════
+# ✅ وضع وقف الخسارة بشكل موثوق (مع إعادة المحاولة)
+#    يضمن عدم بقاء صفقة مفتوحة بدون SL. يعيد (order_id, success)
+# ══════════════════════════════════════════════════════════════
+def place_stop_loss(sym, close_side, qty, stop_price, side, max_retries=None):
+    if max_retries is None:
+        max_retries = CFG.sl_max_retries
+    last_err = ""
+    current_stop = stop_price
+    for attempt in range(1, max_retries + 1):
+        try:
+            slo = exchange.create_order(
+                sym, "STOP_MARKET", close_side, qty, None,
+                {"stopPrice": current_stop, "reduceOnly": True, "workingType": "MARK_PRICE"}
+            )
+            oid = slo.get("id", "")
+            if oid:
+                logger.info(f"🛡️ تم وضع وقف الخسارة بنجاح (محاولة {attempt}) | ID: {oid} | Stop: {current_stop}")
+                return oid, True
+            last_err = "لم يُرجع الطلب ID"
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"⚠️ محاولة SL #{attempt} فشلت لـ {sym}: {last_err}")
+            # إذا رُفض السعر لقربه من السوق، نبعد السعر قليلاً عن السعر الحالي
+            low_msg = last_err.lower()
+            if ("too close" in low_msg or "price gap" in low_msg or "less than" in low_msg
+                    or "greater than" in low_msg or "stop price" in low_msg):
+                try:
+                    mark = exchange_public.fetch_ticker(sym)["last"]
+                    if side == "buy":   # LONG → sell stop أسفل السعر
+                        current_stop = float(exchange.price_to_precision(sym, mark * 0.997))
+                    else:               # SHORT → buy stop أعلى السعر
+                        current_stop = float(exchange.price_to_precision(sym, mark * 1.003))
+                    logger.info(f"🔧 تعديل stopPrice إلى {current_stop} لإعادة المحاولة...")
+                except Exception:
+                    pass
+            time.sleep(0.6)
+    logger.critical(f"❌ فشل وضع وقف الخسارة نهائياً لـ {sym} بعد {max_retries} محاولات: {last_err}")
+    return "", False
+
+
 def execute_trade(sym, final):
     st = trade_state.setdefault(sym, {})
     if st.get("executing", False):
@@ -1981,152 +1903,102 @@ def execute_trade(sym, final):
         try:
             st["executing"] = True
 
-            # تتبع أسباب الرفض بذكاء دون إيقاف التنفيذ العشوائي
-            reasons = []
+            if daily_pnl_pct() <= -CFG.max_daily_loss_pct or db.consecutive_losses() >= CFG.max_consecutive_losses: 
+                return
 
+            open_trades = [t for t in db.get_open_trades() if t["symbol"] == sym]
             current_pos = get_pos(sym)
-            if current_pos and current_pos != "ERROR":
-                reasons.append("POSITION_ALREADY_OPEN")
+            
+            if open_trades:
+                if not current_pos or current_pos == "ERROR":
+                    logger.info(f"🔄 تصحيح مزامنة لـ {sym}: إغلاق الصفقة في القاعدة لعدم وجود مركز حقيقي.")
+                    try:
+                        price = exchange_public.fetch_ticker(sym)["last"]
+                    except:
+                        price = 0
+                    for t in open_trades:
+                        db.close_trade(t["id"], price, 0, 0, 0, "SYNC_FIX")
+                else:
+                    logger.info(f"🚫 تجاهل: توجد صفقة مفتوحة مسبقاً لـ {sym}.")
+                    return
 
+            if current_pos and current_pos != "ERROR": 
+                return
+                
             try:
                 open_orders = exchange.fetch_open_orders(sym)
                 if open_orders:
-                    reasons.append("MANUAL_PENDING_ORDER")
+                    logger.info(f"🚫 تجاهل لـ {sym}: توجد أوامر معلقة (LIMIT/STOP) لم تُنفذ.")
+                    return
             except Exception:
                 pass
 
-            if daily_pnl_pct() <= -CFG.max_daily_loss_pct:
-                reasons.append("MAX_DAILY_LOSS_REACHED")
-            if db.consecutive_losses() >= CFG.max_consecutive_losses:
-                reasons.append("MAX_CONSECUTIVE_LOSSES_REACHED")
-
-            # إذا وجدت أسباب منع حقيقية (مثل وجود صفقة مفتوحة فعلياً)، نتوقف هنا
-            if "POSITION_ALREADY_OPEN" in reasons or "MAX_DAILY_LOSS_REACHED" in reasons:
-                logger.warning(f"❌ NO TRADE [{sym}] | Reason Codes: {' | '.join(reasons)}")
+            if time.time() - st.get("t", 0) < CFG.cooldown_seconds: 
                 return
 
-            # إذا كانت أسباب عادية (مثل طلبات معلقة)، نقوم بتنظيفها ومتابعة الصفقة بشكل طبيعي!
-            if "MANUAL_PENDING_ORDER" in reasons:
-                logger.info(f"🧹 تنظيف طلبات معلقة لـ {sym} لمتابعة تنفيذ الصفقة...")
-                try:
-                    exchange.cancel_all_orders(sym)
-                except Exception:
-                    pass
-
-            if time.time() - st.get("t", 0) < CFG.cooldown_seconds:
+            if db.count_today() >= CFG.max_daily_trades or db.open_count() >= CFG.max_open_positions: 
                 return
 
             price = exchange_public.fetch_ticker(sym)["last"]
             side = "buy" if final.decision == Decision.BUY else "sell"
-
+            
             sl_price = price * (1 - final.sl_percent / 100) if side == "buy" else price * (1 + final.sl_percent / 100)
             tp_price = price * (1 + final.tp_percent / 100) if side == "buy" else price * (1 - final.tp_percent / 100)
-
-            # ══════════════════════════════════════════════════════════
-            # ✅ منطق الإجماع متعدد الطبقات وتحديد المستوى الهرمي (Tier)
-            #    يقيس مدى اتفاق المؤشرات + الذكاء الاصطناعي + الفلاتر الخارجية
-            # ══════════════════════════════════════════════════════════
-            agreement_score = final.final_score
-            consensus_boost = 0
-
-            # 1. فحص الإجماع (إذا كانت الثقة عالية جداً والذكاء الاصطناعي متوافق)
-            if final.apex_score >= 80 and final.ai_score >= 80:
-                consensus_boost += 15
-
-            # 2. فحص توافق الفلاتر الخارجية أو الموديولات
-            if final.tf_alignment >= 7:
-                consensus_boost += 10
-
-            # حساب السكور النهائي بعد الإجماع
-            net_score = agreement_score + consensus_boost
-
-            # تحديد المستويات الأربعة بناءً على الإجماع الحقيقي
-            if CFG.tier_levels_enabled:
-                if net_score >= 90.0 and final.tf_alignment >= 8:
-                    tier = 4  # 🎯 القناص الذهبي (إجماع تام + ثقة قصوى)
-                    applied_leverage = CFG.leverage * 2
-                    risk_multiplier = 2.0
-                    logger.info(f"💎 [GOLDEN SNIPER - CONSENSUS REACHED] {sym} | Net Score: {net_score:.1f}")
-                elif net_score >= 78.0 and final.tf_alignment >= 6:
-                    tier = 3  # 🚀 المستوى الثالث (توافق قوي)
-                    applied_leverage = int(CFG.leverage * 1.5)
-                    risk_multiplier = 1.5
-                elif net_score >= 65.0:
-                    tier = 2  # 🛡️ المستوى الثاني (توافق متوسط)
-                    applied_leverage = CFG.leverage
-                    risk_multiplier = 1.0
-                else:
-                    tier = 1  # ⚖️ المستوى الأول (إجماع ضعيف أو تحفظي)
-                    applied_leverage = CFG.leverage
-                    risk_multiplier = 0.8
-            else:
-                # في حال تعطيل نظام المستويات: نستخدم الإعدادات الأساسية
-                tier = 1
-                applied_leverage = CFG.leverage
-                risk_multiplier = 1.0
-
-            logger.info(f"📊 TIER {tier} [{sym}] | Net Score: {net_score:.1f} | Leverage: x{applied_leverage} | Risk x{risk_multiplier}")
-
+            
             balance = get_balance()
-            if balance <= 0:
+            if balance <= 0: 
                 return
-
-            # حساب الحجم بناءً على مضاعف المخاطرة للمستوى الهرمي
-            base_risk = CFG.risk_per_trade_pct * risk_multiplier
-            qty = (balance * base_risk / 100) / abs(price - sl_price) if abs(price - sl_price) > 0 else 0.0
+                
+            qty = position_size(balance, price, sl_price)
             qty = float(exchange.amount_to_precision(sym, qty))
-            if qty <= 0:
+            if qty <= 0: 
                 return
-            # ══════════════════════════════════════════════════════════
 
             if CFG.dry_run:
                 st["t"] = time.time()
                 db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price, confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-                logger.info(f"✅ DRY RUN Trade Executed for {sym} | TIER {tier}")
+                logger.info(f"✅ DRY RUN Trade Executed for {sym}")
                 return
 
-            # تطبيق الرافعة المخصصة للمستوى الهرمي على بينانس
-            try:
-                exchange.set_leverage(applied_leverage, sym)
-            except Exception:
-                pass
-
+            exchange.set_leverage(CFG.leverage, sym)
             order = exchange.create_market_order(sym, side, qty)
             eoid = order.get("id", "")
-
+            
             p = None
             for _ in range(10):
                 p = get_pos(sym)
                 if p and p != "ERROR":
                     break
                 time.sleep(0.5)
-
+                
             if not p or p == "ERROR":
                 logger.critical(f"❌ خطأ حرج: لم يتم العثور على المركز بعد إرسال الطلب لـ {sym}")
                 return
-
+                
             entry = float(p.get("entryPrice", price))
             aqty = abs(float(p.get("contracts", 0)))
-
-            if aqty <= 0:
+            
+            if aqty <= 0: 
                 emergency_close(sym, "الكمية المفتوحة صفر")
                 return
 
             sl_price = entry * (1 - final.sl_percent / 100) if side == "buy" else entry * (1 + final.sl_percent / 100)
             tp_price = entry * (1 + final.tp_percent / 100) if side == "buy" else entry * (1 - final.tp_percent / 100)
-
+            
             sl_price = float(exchange.price_to_precision(sym, sl_price))
             tp_price = float(exchange.price_to_precision(sym, tp_price))
-
+            
             cs = "sell" if side == "buy" else "buy"
             sloid, tpoid = "", ""
 
-            try:
-                slo = exchange.create_order(sym, "STOP_MARKET", cs, aqty, None, {"stopPrice": sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
-                sloid = slo.get("id", "")
-            except Exception as e:
-                logger.critical(f"SL fail: {e}")
-                emergency_close(sym, "فشل وضع SL")
+            # ══════════════════════════════════════════════════════════
+            # ✅ وضع وقف الخسارة بشكل موثوق (مع إعادة المحاولة)
+            #    لا تُترك الصفقة أبداً بدون SL — إذا فشل نهائياً نغلق المركز
+            # ══════════════════════════════════════════════════════════
+            sloid, sl_ok = place_stop_loss(sym, cs, aqty, sl_price, side)
+            if not sl_ok:
+                logger.critical(f"SL fail after retries: {sym}")
+                emergency_close(sym, "فشل وضع SL بعد عدة محاولات")
                 return
 
             try:
@@ -2136,19 +2008,19 @@ def execute_trade(sym, final):
                 logger.error(f"TP fail: {e}")
                 if sloid:
                     try: exchange.cancel_order(sloid, sym)
-                    except Exception: pass
+                    except: pass
                 emergency_close(sym, "فشل وضع TP")
                 return
 
             st["t"] = time.time()
-
-            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f} | TIER={tier}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | TIER {tier} | Lev x{applied_leverage}")
+            
+            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
+            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | SL: {sl_price} | TP: {tp_price}")
 
         except Exception as e:
             logger.error(f"Exec Error: {e}")
             emergency_close(sym, str(e))
-
+            
         finally:
             st["executing"] = False
 
@@ -2195,10 +2067,9 @@ def main():
     logger.info(f"   Min Signal Score: {CFG.min_signal_score} | Min Confidence: {CFG.min_confidence}")
     logger.info(f"   Min Module Agreement: {CFG.min_module_agreement}")
     logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
-    logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
-    logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
-    logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=90s, Explosive≥96)")
-    logger.info(f"   AI Dual-Model: {CFG.ai_model} (Mixtral) + {CFG.ai_model_oss} (GPT-OSS) ⚡")
+    logger.info(f"   Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
+    logger.info(f"   SL Retries: {CFG.sl_max_retries} (ضمان وضع وقف الخسارة 🛡️)")
+    logger.info(f"   AI Race: {CFG.ai_model} + {CFG.ai_model_minimax} (الأسرع يفوز ⚡)")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
     logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
@@ -2224,10 +2095,10 @@ def main():
                 logger.warning(f"Load {sym} {tf}: {e}")
             time.sleep(0.2)
     logger.info("Data ready")
-
+    
     monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
-
+    
     scanner = MarketScanner()
     scanner.start()
     bot_stats["status"] = "RUNNING"
