@@ -10,7 +10,7 @@
 ║  • Layer 4: Derivatives Intelligence (OI/Funding/LSR/Flow)   ║
 ║  • Layer 5: Regime Classifier (9 regimes, adaptive weights)  ║
 ║  • Layer 6: Multi-Timeframe Alignment                        ║
-║  • Layer 7: AI Race (Mistral + MiniMax-M3 — الأسرع يفوز)     ║
+║  • Layer 7: AI Veto / Explainer (GPT-OSS-20B)                ║
 ║  • Layer 8: External Strategies Veto (conor19w)              ║
 ║                                                              ║
 ║  Merged from: APEX v1 + MSSI v2 + APEX v3 Technical Layer    ║
@@ -402,18 +402,12 @@ class DerivativesFeed:
 class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
-    # ══════════════════════════════════════════════════════════
-    # ✅ إعدادات الذكاء الاصطناعي المزدوج (AI Race — الأسرع يفوز)
-    #    النموذج 1: Mistral Medium (الحالي)
-    #    النموذج 2: MiniMax-M3 (الجديد) — نأخذ إجابة الأسرع
-    # ══════════════════════════════════════════════════════════
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
-    ai_model: str = "mistralai/mistral-medium-3.5-128b"
-    # ✅ النموذج الثاني: MiniMax-M3 (المفتاح الجديد)
-    nvidia_api_key_minimax: str = os.getenv("NVIDIA_API_KEY_MINIMAX", "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")
-    ai_model_minimax: str = "minimaxai/minimax-m3"
-    ai_race_timeout: float = 10.0   # مهلة انتظار أول رد ناجح (ثانية)
-    sl_max_retries: int = 3         # عدد محاولات وضع وقف الخسارة
+    # ══════════════════════════════════════════════════════════
+    # ✅ نموذج الذكاء الاصطناعي: GPT-OSS-20B (بدل Mistral و MiniMax)
+    # ══════════════════════════════════════════════════════════
+    nvidia_api_key_oss: str = os.getenv("NVIDIA_API_KEY_OSS", "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")
+    ai_model: str = "openai/gpt-oss-20b"
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
@@ -1394,15 +1388,14 @@ def position_size(balance, entry, sl):
 
 
 # ══════════════════════════════════════════════════════════════
-# ✅ محلل الذكاء الاصطناعي المزدوج (AI Race — الأسرع يفوز)
-#    Mistral Medium + MiniMax-M3 يعملان بالتوازي، وأول رد ناجح
-#    يُعتمد فوراً ويتم تجاهل النموذج الآخر.
+# ✅ محلل الذكاء الاصطناعي — GPT-OSS-20B (بدل Mistral و MiniMax)
 # ══════════════════════════════════════════════════════════════
 class AIAnalyst:
-    INVOKE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-
-    def _build_prompt(self, symbol, apex_out):
-        return f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
+    def analyze(self, symbol, apex_out):
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
+        if not CFG.use_ai_veto and not CFG.use_ai_explainer:
+            return result
+        prompt = f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
 
 العملة: {symbol}
 قرار APEX: {apex_out.decision.value}
@@ -1422,28 +1415,24 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 
 أجب JSON فقط:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
-
-    def _call_model_sync(self, prompt, model, api_key, label, system_msg="/think", extra_payload=None):
-        """استدعاء متزامن لنموذج واحد عبر NVIDIA API (يعيد dict أو None عند الفشل)"""
         try:
+            invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
             headers = {
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {CFG.nvidia_api_key_oss}",
                 "Accept": "application/json",
             }
             payload = {
                 "messages": [
-                    {"role": "system", "content": system_msg},
+                    {"role": "system", "content": "You are an expert crypto trading analyst. Always respond with valid JSON only."},
                     {"role": "user", "content": prompt}
                 ],
-                "model": model,
-                "max_tokens": 16384,
+                "model": CFG.ai_model,
+                "max_tokens": 4096,
                 "stream": False,
                 "temperature": 0.7,
                 "top_p": 1
             }
-            if extra_payload:
-                payload.update(extra_payload)
-            response = requests.post(self.INVOKE_URL, headers=headers, json=payload, timeout=12)
+            response = requests.post(invoke_url, headers=headers, json=payload, timeout=60)
             resp_json = response.json()
             raw = resp_json["choices"][0]["message"]["content"] or ""
             cleaned = raw.strip()
@@ -1454,97 +1443,16 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
             if js >= 0 and je > js:
                 cleaned = cleaned[js:je]
             dj = json.loads(cleaned)
-            decision = str(dj.get("decision", "WAIT")).upper()
-            if decision not in ("BUY", "SELL", "WAIT"):
-                decision = "WAIT"
-            return {
-                "decision": decision,
-                "confidence": max(0, min(100, float(dj.get("confidence", 0)))),
-                "explanation": str(dj.get("explanation", "")),
-                "risk_warnings": dj.get("risk_warnings", []),
-                "error": False,
-                "model": label,
-            }
-        except Exception as e:
-            logger.warning(f"AI [{label}] ERROR: {e}")
-            return None
-
-    async def _call_model_async(self, prompt, model, api_key, label, system_msg="/think", extra_payload=None):
-        """تشغيل الاستدعاء المتزامن في thread منفصل لتحقيق التوازي الحقيقي"""
-        return await asyncio.to_thread(
-            self._call_model_sync, prompt, model, api_key, label, system_msg, extra_payload)
-
-    async def _race_ai_decision(self, prompt):
-        # النموذج 1: Mistral Medium (الحالي)
-        task_mistral = asyncio.create_task(
-            self._call_model_async(prompt, CFG.ai_model, CFG.nvidia_api_key, "MISTRAL"))
-        # النموذج 2: MiniMax-M3 (الجديد) — مع إعداداته الخاصة (thinking_mode disabled)
-        task_minimax = asyncio.create_task(
-            self._call_model_async(
-                prompt, CFG.ai_model_minimax, CFG.nvidia_api_key_minimax, "MINIMAX-M3",
-                system_msg="You are an expert crypto trading analyst. Respond with JSON only.",
-                extra_payload={
-                    "temperature": 1,
-                    "top_p": 0.95,
-                    "max_tokens": 7425,
-                    "chat_template_kwargs": {"thinking_mode": "disabled"},
-                }))
-
-        pending = {task_mistral, task_minimax}
-        deadline = time.time() + CFG.ai_race_timeout
-
-        # الأسرع يفوز: ننتظر أول رد ناجح ونتجاهل الباقي
-        while pending:
-            remaining = max(0.1, deadline - time.time())
-            done, pending = await asyncio.wait(
-                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
-            for t in done:
-                try:
-                    res = t.result()
-                except Exception:
-                    res = None
-                if res is not None:
-                    # أول رد ناجح → نعتمده ونلغي النموذج الآخر
-                    for p in pending:
-                        p.cancel()
-                    return res
-            if time.time() >= deadline:
-                break
-
-        # انتهاء المهلة دون رد ناجح → إلغاء الكل
-        for p in pending:
-            p.cancel()
-        return None
-
-    def analyze(self, symbol, apex_out):
-        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
-        if not CFG.use_ai_veto and not CFG.use_ai_explainer:
-            return result
-        prompt = self._build_prompt(symbol, apex_out)
-        try:
-            chosen = asyncio.run(self._race_ai_decision(prompt))
-            if chosen is None:
+            result["decision"] = str(dj.get("decision", "WAIT")).upper()
+            if result["decision"] not in ("BUY", "SELL", "WAIT"):
                 result["decision"] = "WAIT"
-                result["confidence"] = 0
-                result["error"] = True
-                result["explanation"] = "AI_ERROR: all models timeout/failed"
-                logger.warning(f"AI {symbol}: ALL MODELS FAILED/TIMEOUT")
-                return result
-            result = {
-                "decision": chosen.get("decision", "WAIT"),
-                "confidence": chosen.get("confidence", 0.0),
-                "explanation": chosen.get("explanation", ""),
-                "risk_warnings": chosen.get("risk_warnings", []),
-                "error": chosen.get("error", False),
-            }
-            logger.info(
-                f"AI {symbol} [{chosen.get('model')} ⚡]: {result['decision']} | "
-                f"Conf={result['confidence']} | {result['explanation'][:80]}")
+            result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
+            result["explanation"] = str(dj.get("explanation", ""))
+            result["risk_warnings"] = dj.get("risk_warnings", [])
+            logger.info(f"AI [GPT-OSS] {symbol}: {result['decision']} | Conf={result['confidence']} | {result['explanation'][:80]}")
         except Exception as e:
             logger.warning(f"AI ERROR {symbol}: {e}")
-            result["decision"] = "WAIT"
-            result["confidence"] = 0
-            result["error"] = True
+            result["decision"] = "WAIT"; result["confidence"] = 0; result["error"] = True
             result["explanation"] = f"AI_ERROR: {str(e)[:100]}"
         return result
 
@@ -1853,47 +1761,6 @@ def emergency_close(sym, reason):
         logger.critical(f"❌ فشل إغلاق الصفقة (Emergency fail): {e}")
 
 
-# ══════════════════════════════════════════════════════════════
-# ✅ وضع وقف الخسارة بشكل موثوق (مع إعادة المحاولة)
-#    يضمن عدم بقاء صفقة مفتوحة بدون SL. يعيد (order_id, success)
-# ══════════════════════════════════════════════════════════════
-def place_stop_loss(sym, close_side, qty, stop_price, side, max_retries=None):
-    if max_retries is None:
-        max_retries = CFG.sl_max_retries
-    last_err = ""
-    current_stop = stop_price
-    for attempt in range(1, max_retries + 1):
-        try:
-            slo = exchange.create_order(
-                sym, "STOP_MARKET", close_side, qty, None,
-                {"stopPrice": current_stop, "reduceOnly": True, "workingType": "MARK_PRICE"}
-            )
-            oid = slo.get("id", "")
-            if oid:
-                logger.info(f"🛡️ تم وضع وقف الخسارة بنجاح (محاولة {attempt}) | ID: {oid} | Stop: {current_stop}")
-                return oid, True
-            last_err = "لم يُرجع الطلب ID"
-        except Exception as e:
-            last_err = str(e)
-            logger.warning(f"⚠️ محاولة SL #{attempt} فشلت لـ {sym}: {last_err}")
-            # إذا رُفض السعر لقربه من السوق، نبعد السعر قليلاً عن السعر الحالي
-            low_msg = last_err.lower()
-            if ("too close" in low_msg or "price gap" in low_msg or "less than" in low_msg
-                    or "greater than" in low_msg or "stop price" in low_msg):
-                try:
-                    mark = exchange_public.fetch_ticker(sym)["last"]
-                    if side == "buy":   # LONG → sell stop أسفل السعر
-                        current_stop = float(exchange.price_to_precision(sym, mark * 0.997))
-                    else:               # SHORT → buy stop أعلى السعر
-                        current_stop = float(exchange.price_to_precision(sym, mark * 1.003))
-                    logger.info(f"🔧 تعديل stopPrice إلى {current_stop} لإعادة المحاولة...")
-                except Exception:
-                    pass
-            time.sleep(0.6)
-    logger.critical(f"❌ فشل وضع وقف الخسارة نهائياً لـ {sym} بعد {max_retries} محاولات: {last_err}")
-    return "", False
-
-
 def execute_trade(sym, final):
     st = trade_state.setdefault(sym, {})
     if st.get("executing", False):
@@ -1991,14 +1858,12 @@ def execute_trade(sym, final):
             cs = "sell" if side == "buy" else "buy"
             sloid, tpoid = "", ""
 
-            # ══════════════════════════════════════════════════════════
-            # ✅ وضع وقف الخسارة بشكل موثوق (مع إعادة المحاولة)
-            #    لا تُترك الصفقة أبداً بدون SL — إذا فشل نهائياً نغلق المركز
-            # ══════════════════════════════════════════════════════════
-            sloid, sl_ok = place_stop_loss(sym, cs, aqty, sl_price, side)
-            if not sl_ok:
-                logger.critical(f"SL fail after retries: {sym}")
-                emergency_close(sym, "فشل وضع SL بعد عدة محاولات")
+            try:
+                slo = exchange.create_order(sym, "STOP_MARKET", cs, aqty, None, {"stopPrice": sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
+                sloid = slo.get("id", "")
+            except Exception as e:
+                logger.critical(f"SL fail: {e}")
+                emergency_close(sym, "فشل وضع SL")
                 return
 
             try:
@@ -2015,7 +1880,7 @@ def execute_trade(sym, final):
             st["t"] = time.time()
             
             tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | SL: {sl_price} | TP: {tp_price}")
+            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry}")
 
         except Exception as e:
             logger.error(f"Exec Error: {e}")
@@ -2068,8 +1933,7 @@ def main():
     logger.info(f"   Min Module Agreement: {CFG.min_module_agreement}")
     logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
-    logger.info(f"   SL Retries: {CFG.sl_max_retries} (ضمان وضع وقف الخسارة 🛡️)")
-    logger.info(f"   AI Race: {CFG.ai_model} + {CFG.ai_model_minimax} (الأسرع يفوز ⚡)")
+    logger.info(f"   AI Model: {CFG.ai_model} (GPT-OSS-20B 🤖)")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
     logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
