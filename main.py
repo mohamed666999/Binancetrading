@@ -2,29 +2,19 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║     APEX TRADING BOT v3.0 — Multi-Layer Signal Fusion        ║
-║                                                              ║
-║  Architecture:                                               ║
-║  • Layer 1: 9 Independent Signal Modules (APEX Classic)      ║
-║  • Layer 2: Technical Indicators Engine (RSI/MACD/EMA/BB)    ║
-║  • Layer 3: Market Structure (S/R, Volume Profile, HH/HL)    ║
-║  • Layer 4: Derivatives Intelligence (OI/Funding/LSR/Flow)   ║
-║  • Layer 5: Regime Classifier (9 regimes, adaptive weights)  ║
-║  • Layer 6: Multi-Timeframe Alignment                        ║
-║  • Layer 7: AI Veto / Explainer (15% weight)                 ║
-║  • Layer 8: External Strategies Veto (conor19w)              ║
-║                                                              ║
-║  Merged from: APEX v1 + MSSI v2 + APEX v3 Technical Layer    ║
+║  AI: Dual-Model Race (Mistral + GPT-OSS) → Fastest Wins     ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
-import .asyncio, json, time, threading, math, os, sqlite3, logging
+import asyncio, json, time, threading, math, os, sqlite3, logging
 from collections import deque, defaultdict
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import websockets, ccxt, requests
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify
 from openai import OpenAI
 
 # --- External Strategies Integration (Project B / conor19w) ---
@@ -402,8 +392,19 @@ class DerivativesFeed:
 class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
+
+    # ✅ النموذج الأول: Mistral (المفتاح القديم)
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
     ai_model: str = "mistralai/mistral-medium-3.5-128b"
+
+    # ✅ النموذج الثاني: GPT-OSS (المفتاح الجديد)
+    nvidia_api_key_oss: str = os.getenv("NVIDIA_API_KEY_OSS", "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")
+    ai_model_oss: str = "openai/gpt-oss-20b"
+
+    # ✅ تفعيل السباق بين النموذجين (الأسرع يفوز)
+    ai_race_enabled: bool = True
+    ai_race_timeout: float = 45.0  # أقصى انتظار بالسواني
+
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
@@ -1383,11 +1384,78 @@ def position_size(balance, entry, sl):
     return risk_usdt / sl_dist
 
 
+# ══════════════════════════════════════════════════════════════
+# ✅ AI ANALYST — Dual-Model Race (Mistral + GPT-OSS)
+#    يُرسل الطلب لكلا النموذجين بالتوازي ويأخذ أول رد يصل.
+#    النموذج الأبطأ يُتجاهل تلقائياً.
+# ══════════════════════════════════════════════════════════════
 class AIAnalyst:
+    def __init__(self):
+        # عميل Mistral (المفتاح القديم)
+        self.client_mistral = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=CFG.nvidia_api_key,
+        )
+        # عميل GPT-OSS (المفتاح الجديد)
+        self.client_oss = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=CFG.nvidia_api_key_oss,
+        )
+
+    def _call_model(self, client: OpenAI, model: str, prompt: str, label: str) -> Dict[str, Any]:
+        """استدعاء نموذج واحد وإرجاع النتيجة الخام."""
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "/think"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            top_p=1,
+            max_tokens=4096,
+            stream=True,
+        )
+        content_parts = []
+        for chunk in completion:
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            # نتجاهل reasoning_content ونأخذ المحتوى النهائي فقط
+            if delta.content is not None:
+                content_parts.append(delta.content)
+        raw = "".join(content_parts)
+        return {"raw": raw, "label": label}
+
+    def _parse_response(self, raw: str) -> Dict[str, Any]:
+        """تحليل رد JSON من النموذج."""
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": []}
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+        js = cleaned.find("{")
+        je = cleaned.rfind("}") + 1
+        if js >= 0 and je > js:
+            cleaned = cleaned[js:je]
+        try:
+            dj = json.loads(cleaned)
+            result["decision"] = str(dj.get("decision", "WAIT")).upper()
+            if result["decision"] not in ("BUY", "SELL", "WAIT"):
+                result["decision"] = "WAIT"
+            result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
+            result["explanation"] = str(dj.get("explanation", ""))
+            result["risk_warnings"] = dj.get("risk_warnings", [])
+        except Exception:
+            result["decision"] = "WAIT"
+            result["confidence"] = 0.0
+            result["explanation"] = "PARSE_ERROR"
+        return result
+
     def analyze(self, symbol, apex_out):
-        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False, "winner": ""}
         if not CFG.use_ai_veto and not CFG.use_ai_explainer:
             return result
+
         prompt = f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
 
 العملة: {symbol}
@@ -1408,45 +1476,58 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 
 أجب JSON فقط:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
+
+        # ── وضع السباق: كلا النموذجين بالتوازي، الأسرع يفوز ──
+        if CFG.ai_race_enabled:
+            try:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = {
+                        executor.submit(self._call_model, self.client_mistral, CFG.ai_model, prompt, "Mistral"): "Mistral",
+                        executor.submit(self._call_model, self.client_oss, CFG.ai_model_oss, prompt, "GPT-OSS"): "GPT-OSS",
+                    }
+                    # نأخذ أول نتيجة تكتمل (الأسرع)
+                    for future in as_completed(futures, timeout=CFG.ai_race_timeout):
+                        label = futures[future]
+                        try:
+                            resp = future.result()
+                            parsed = self._parse_response(resp["raw"])
+                            result["decision"] = parsed["decision"]
+                            result["confidence"] = parsed["confidence"]
+                            result["explanation"] = parsed["explanation"]
+                            result["risk_warnings"] = parsed["risk_warnings"]
+                            result["winner"] = label
+                            logger.info(f"🏁 AI RACE [{symbol}] الفائز: {label} | {parsed['decision']} | Conf={parsed['confidence']} | {parsed['explanation'][:80]}")
+                            # ✅ أول رد وصل = الفائز. نخرج فوراً ونتجاهل الثاني.
+                            return result
+                        except Exception as e:
+                            logger.warning(f"AI RACE [{symbol}] فشل {label}: {e}")
+                            continue
+                # إذا فشل كلاهما
+                logger.warning(f"AI RACE [{symbol}] كلا النموذجين فشلا")
+                result["error"] = True
+                result["explanation"] = "AI_RACE_BOTH_FAILED"
+                return result
+            except Exception as e:
+                logger.warning(f"AI RACE ERROR [{symbol}]: {e}")
+                result["error"] = True
+                result["explanation"] = f"AI_RACE_ERROR: {str(e)[:100]}"
+                return result
+
+        # ── وضع عادي: Mistral فقط (إذا عُطل السباق) ──
         try:
-            invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {CFG.nvidia_api_key}",
-                "Accept": "application/json",
-            }
-            payload = {
-                "messages": [
-                    {"role": "system", "content": "/think"},
-                    {"role": "user", "content": prompt}
-                ],
-                "model": CFG.ai_model,
-                "reasoning_effort": "high",
-                "max_tokens": 16384,
-                "stream": False,
-                "temperature": 0.7,
-                "top_p": 1
-            }
-            response = requests.post(invoke_url, headers=headers, json=payload, timeout=60)
-            resp_json = response.json()
-            raw = resp_json["choices"][0]["message"]["content"] or ""
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
-                cleaned = "\n".join(lines).strip()
-            js = cleaned.find("{"); je = cleaned.rfind("}") + 1
-            if js >= 0 and je > js:
-                cleaned = cleaned[js:je]
-            dj = json.loads(cleaned)
-            result["decision"] = str(dj.get("decision", "WAIT")).upper()
-            if result["decision"] not in ("BUY", "SELL", "WAIT"):
-                result["decision"] = "WAIT"
-            result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
-            result["explanation"] = str(dj.get("explanation", ""))
-            result["risk_warnings"] = dj.get("risk_warnings", [])
-            logger.info(f"AI {symbol}: {result['decision']} | Conf={result['confidence']} | {result['explanation'][:80]}")
+            resp = self._call_model(self.client_mistral, CFG.ai_model, prompt, "Mistral")
+            parsed = self._parse_response(resp["raw"])
+            result["decision"] = parsed["decision"]
+            result["confidence"] = parsed["confidence"]
+            result["explanation"] = parsed["explanation"]
+            result["risk_warnings"] = parsed["risk_warnings"]
+            result["winner"] = "Mistral"
+            logger.info(f"AI {symbol}: {parsed['decision']} | Conf={parsed['confidence']} | {parsed['explanation'][:80]}")
         except Exception as e:
             logger.warning(f"AI ERROR {symbol}: {e}")
-            result["decision"] = "WAIT"; result["confidence"] = 0; result["error"] = True
+            result["decision"] = "WAIT"
+            result["confidence"] = 0
+            result["error"] = True
             result["explanation"] = f"AI_ERROR: {str(e)[:100]}"
         return result
 
@@ -1618,9 +1699,6 @@ class MarketScanner:
             logger.info(f"   {r}")
         ai = ai_analyst.analyze(sym, apex)
 
-        # -----------------------------------------------------
-        # تشغيل الاستراتيجيات الخارجية (conor19w)
-        # ✅ تم الإصلاح: d_primary هي list عادية من ccxt وليست كائن OHLCV
         ext_decision = "HOLD"
         ext_conf = 0
         if CFG.use_external_strategies and EXTERNAL_AVAILABLE:
@@ -1639,7 +1717,6 @@ class MarketScanner:
                 ext_signals.append(sig)
             ext_decision, ext_conf, ext_details = aggregate_signals(ext_signals)
             logger.info(f"🌐 External [{sym}]: {ext_decision} | Conf={ext_conf}")
-        # -----------------------------------------------------
 
         final = FinalDecision()
         final.sl_percent = apex.sl_percent
@@ -1680,7 +1757,8 @@ class MarketScanner:
         else:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
             final.final_score = (apex.confidence * 0.75) + (ai["confidence"] * 0.15) + (ext_conf * 0.10)
-            final.reasons = [f"✅ APEX {apex.decision.value} | AI={ai['decision']}({ai['confidence']}) | Ext={ext_decision}({ext_conf})"] + apex.reasons
+            winner_tag = f" | AI-Winner={ai.get('winner','')}" if ai.get("winner") else ""
+            final.reasons = [f"✅ APEX {apex.decision.value} | AI={ai['decision']}({ai['confidence']}){winner_tag} | Ext={ext_decision}({ext_conf})"] + apex.reasons
 
         logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | {final.reasons[0] if final.reasons else ''}")
         bot_stats["last_analysis"][sym] = {
@@ -1764,18 +1842,18 @@ def execute_trade(sym, final):
         try:
             st["executing"] = True
 
-            if daily_pnl_pct() <= -CFG.max_daily_loss_pct or db.consecutive_losses() >= CFG.max_consecutive_losses: 
+            if daily_pnl_pct() <= -CFG.max_daily_loss_pct or db.consecutive_losses() >= CFG.max_consecutive_losses:
                 return
 
             open_trades = [t for t in db.get_open_trades() if t["symbol"] == sym]
             current_pos = get_pos(sym)
-            
+
             if open_trades:
                 if not current_pos or current_pos == "ERROR":
                     logger.info(f"🔄 تصحيح مزامنة لـ {sym}: إغلاق الصفقة في القاعدة لعدم وجود مركز حقيقي.")
                     try:
                         price = exchange_public.fetch_ticker(sym)["last"]
-                    except:
+                    except Exception:
                         price = 0
                     for t in open_trades:
                         db.close_trade(t["id"], price, 0, 0, 0, "SYNC_FIX")
@@ -1783,9 +1861,9 @@ def execute_trade(sym, final):
                     logger.info(f"🚫 تجاهل: توجد صفقة مفتوحة مسبقاً لـ {sym}.")
                     return
 
-            if current_pos and current_pos != "ERROR": 
+            if current_pos and current_pos != "ERROR":
                 return
-                
+
             try:
                 open_orders = exchange.fetch_open_orders(sym)
                 if open_orders:
@@ -1794,25 +1872,25 @@ def execute_trade(sym, final):
             except Exception:
                 pass
 
-            if time.time() - st.get("t", 0) < CFG.cooldown_seconds: 
+            if time.time() - st.get("t", 0) < CFG.cooldown_seconds:
                 return
 
-            if db.count_today() >= CFG.max_daily_trades or db.open_count() >= CFG.max_open_positions: 
+            if db.count_today() >= CFG.max_daily_trades or db.open_count() >= CFG.max_open_positions:
                 return
 
             price = exchange_public.fetch_ticker(sym)["last"]
             side = "buy" if final.decision == Decision.BUY else "sell"
-            
+
             sl_price = price * (1 - final.sl_percent / 100) if side == "buy" else price * (1 + final.sl_percent / 100)
             tp_price = price * (1 + final.tp_percent / 100) if side == "buy" else price * (1 - final.tp_percent / 100)
-            
+
             balance = get_balance()
-            if balance <= 0: 
+            if balance <= 0:
                 return
-                
+
             qty = position_size(balance, price, sl_price)
             qty = float(exchange.amount_to_precision(sym, qty))
-            if qty <= 0: 
+            if qty <= 0:
                 return
 
             if CFG.dry_run:
@@ -1824,31 +1902,31 @@ def execute_trade(sym, final):
             exchange.set_leverage(CFG.leverage, sym)
             order = exchange.create_market_order(sym, side, qty)
             eoid = order.get("id", "")
-            
+
             p = None
             for _ in range(10):
                 p = get_pos(sym)
                 if p and p != "ERROR":
                     break
                 time.sleep(0.5)
-                
+
             if not p or p == "ERROR":
                 logger.critical(f"❌ خطأ حرج: لم يتم العثور على المركز بعد إرسال الطلب لـ {sym}")
                 return
-                
+
             entry = float(p.get("entryPrice", price))
             aqty = abs(float(p.get("contracts", 0)))
-            
-            if aqty <= 0: 
+
+            if aqty <= 0:
                 emergency_close(sym, "الكمية المفتوحة صفر")
                 return
 
             sl_price = entry * (1 - final.sl_percent / 100) if side == "buy" else entry * (1 + final.sl_percent / 100)
             tp_price = entry * (1 + final.tp_percent / 100) if side == "buy" else entry * (1 - final.tp_percent / 100)
-            
+
             sl_price = float(exchange.price_to_precision(sym, sl_price))
             tp_price = float(exchange.price_to_precision(sym, tp_price))
-            
+
             cs = "sell" if side == "buy" else "buy"
             sloid, tpoid = "", ""
 
@@ -1867,19 +1945,19 @@ def execute_trade(sym, final):
                 logger.error(f"TP fail: {e}")
                 if sloid:
                     try: exchange.cancel_order(sloid, sym)
-                    except: pass
+                    except Exception: pass
                 emergency_close(sym, "فشل وضع TP")
                 return
 
             st["t"] = time.time()
-            
+
             tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
             logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry}")
 
         except Exception as e:
             logger.error(f"Exec Error: {e}")
             emergency_close(sym, str(e))
-            
+
         finally:
             st["executing"] = False
 
@@ -1922,6 +2000,7 @@ def main():
     logger.info("APEX TRADING BOT v3.0 — Multi-Layer Fusion")
     logger.info(f"   IP: {ip}")
     logger.info(f"   Mode: {'DRY_RUN 📝' if CFG.dry_run else 'LIVE 🚀'}")
+    logger.info(f"   AI Race: {'ON 🏁' if CFG.ai_race_enabled else 'OFF'} | Models: {CFG.ai_model} + {CFG.ai_model_oss}")
     logger.info(f"   Scanner every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
     logger.info(f"   Min Signal Score: {CFG.min_signal_score} | Min Confidence: {CFG.min_confidence}")
     logger.info(f"   Min Module Agreement: {CFG.min_module_agreement}")
@@ -1952,10 +2031,10 @@ def main():
                 logger.warning(f"Load {sym} {tf}: {e}")
             time.sleep(0.2)
     logger.info("Data ready")
-    
+
     monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
-    
+
     scanner = MarketScanner()
     scanner.start()
     bot_stats["status"] = "RUNNING"
