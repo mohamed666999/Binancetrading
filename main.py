@@ -407,6 +407,11 @@ class Config:
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
+    # ══════════════════════════════════════════════════════════
+    # ✅ إعدادات المستويات الأربعة الهرمية (Tier System)
+    # المستويات: 1 (عادي)، 2 (متوسط)، 3 (متقدم)، 4 (قناص ذهبي)
+    # ══════════════════════════════════════════════════════════
+    tier_levels_enabled: bool = True
     trailing_enabled: bool = True
     trailing_activation: float = 80.0
     trailing_drop: float = 9.0
@@ -1805,22 +1810,75 @@ def execute_trade(sym, final):
             sl_price = price * (1 - final.sl_percent / 100) if side == "buy" else price * (1 + final.sl_percent / 100)
             tp_price = price * (1 + final.tp_percent / 100) if side == "buy" else price * (1 - final.tp_percent / 100)
 
+            # ══════════════════════════════════════════════════════════
+            # ✅ منطق الإجماع متعدد الطبقات وتحديد المستوى الهرمي (Tier)
+            #    يقيس مدى اتفاق المؤشرات + الذكاء الاصطناعي + الفلاتر الخارجية
+            # ══════════════════════════════════════════════════════════
+            agreement_score = final.final_score
+            consensus_boost = 0
+
+            # 1. فحص الإجماع (إذا كانت الثقة عالية جداً والذكاء الاصطناعي متوافق)
+            if final.apex_score >= 80 and final.ai_score >= 80:
+                consensus_boost += 15
+
+            # 2. فحص توافق الفلاتر الخارجية أو الموديولات
+            if final.tf_alignment >= 7:
+                consensus_boost += 10
+
+            # حساب السكور النهائي بعد الإجماع
+            net_score = agreement_score + consensus_boost
+
+            # تحديد المستويات الأربعة بناءً على الإجماع الحقيقي
+            if CFG.tier_levels_enabled:
+                if net_score >= 90.0 and final.tf_alignment >= 8:
+                    tier = 4  # 🎯 القناص الذهبي (إجماع تام + ثقة قصوى)
+                    applied_leverage = CFG.leverage * 2
+                    risk_multiplier = 2.0
+                    logger.info(f"💎 [GOLDEN SNIPER - CONSENSUS REACHED] {sym} | Net Score: {net_score:.1f}")
+                elif net_score >= 78.0 and final.tf_alignment >= 6:
+                    tier = 3  # 🚀 المستوى الثالث (توافق قوي)
+                    applied_leverage = int(CFG.leverage * 1.5)
+                    risk_multiplier = 1.5
+                elif net_score >= 65.0:
+                    tier = 2  # 🛡️ المستوى الثاني (توافق متوسط)
+                    applied_leverage = CFG.leverage
+                    risk_multiplier = 1.0
+                else:
+                    tier = 1  # ⚖️ المستوى الأول (إجماع ضعيف أو تحفظي)
+                    applied_leverage = CFG.leverage
+                    risk_multiplier = 0.8
+            else:
+                # في حال تعطيل نظام المستويات: نستخدم الإعدادات الأساسية
+                tier = 1
+                applied_leverage = CFG.leverage
+                risk_multiplier = 1.0
+
+            logger.info(f"📊 TIER {tier} [{sym}] | Net Score: {net_score:.1f} | Leverage: x{applied_leverage} | Risk x{risk_multiplier}")
+
             balance = get_balance()
             if balance <= 0:
                 return
 
-            qty = position_size(balance, price, sl_price)
+            # حساب الحجم بناءً على مضاعف المخاطرة للمستوى الهرمي
+            base_risk = CFG.risk_per_trade_pct * risk_multiplier
+            qty = (balance * base_risk / 100) / abs(price - sl_price) if abs(price - sl_price) > 0 else 0.0
             qty = float(exchange.amount_to_precision(sym, qty))
             if qty <= 0:
                 return
+            # ══════════════════════════════════════════════════════════
 
             if CFG.dry_run:
                 st["t"] = time.time()
                 db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price, confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-                logger.info(f"✅ DRY RUN Trade Executed for {sym}")
+                logger.info(f"✅ DRY RUN Trade Executed for {sym} | TIER {tier}")
                 return
 
-            exchange.set_leverage(CFG.leverage, sym)
+            # تطبيق الرافعة المخصصة للمستوى الهرمي على بينانس
+            try:
+                exchange.set_leverage(applied_leverage, sym)
+            except Exception:
+                pass
+
             order = exchange.create_market_order(sym, side, qty)
             eoid = order.get("id", "")
 
@@ -1872,8 +1930,8 @@ def execute_trade(sym, final):
 
             st["t"] = time.time()
 
-            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry}")
+            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f} | TIER={tier}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
+            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | TIER {tier} | Lev x{applied_leverage}")
 
         except Exception as e:
             logger.error(f"Exec Error: {e}")
@@ -1925,7 +1983,8 @@ def main():
     logger.info(f"   Min Signal Score: {CFG.min_signal_score} | Min Confidence: {CFG.min_confidence}")
     logger.info(f"   Min Module Agreement: {CFG.min_module_agreement}")
     logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
-    logger.info(f"   Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
+    logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
+    logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
     logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
