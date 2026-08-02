@@ -10,7 +10,7 @@
 ║  • Layer 4: Derivatives Intelligence (OI/Funding/LSR/Flow)   ║
 ║  • Layer 5: Regime Classifier (9 regimes, adaptive weights)  ║
 ║  • Layer 6: Multi-Timeframe Alignment                        ║
-║  • Layer 7: AI Veto / Explainer (15% weight)                 ║
+║  • Layer 7: AI Dual-Model Consensus (Mixtral + GPT-OSS)      ║
 ║  • Layer 8: External Strategies Veto (conor19w)              ║
 ║                                                              ║
 ║  Merged from: APEX v1 + MSSI v2 + APEX v3 Technical Layer    ║
@@ -402,8 +402,20 @@ class DerivativesFeed:
 class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
+    # ══════════════════════════════════════════════════════════
+    # ✅ إعدادات الذكاء الاصطناعي المزدوج (Dual-Model Consensus)
+    #    النموذج الأول: Mixtral 8x7B (سريع — للقرار الأولي)
+    #    النموذج الثاني: GPT-OSS-20B (أقوى — للمراجعة والتحسين)
+    # ══════════════════════════════════════════════════════════
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
-    ai_model: str = "mistralai/mistral-medium-3.5-128b"
+    ai_model: str = "mistralai/mixtral-8x7b-instruct"   # النموذج الأول (Mixtral — السرعة)
+    # ✅ النموذج الثاني: GPT-OSS (المفتاح الجديد)
+    nvidia_api_key_oss: str = os.getenv("NVIDIA_API_KEY_OSS", "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")
+    ai_model_oss: str = "openai/gpt-oss-20b"            # النموذج الثاني (GPT-OSS — القوة)
+    # مهل الانتظار للاستدعاء المتوازي
+    ai_first_timeout: float = 2.0    # انتظار أول رد (ثانية)
+    ai_second_timeout: float = 2.0   # انتظار النموذج الآخر (ثانية) → إجمالي 4
+    ai_upgrade_margin: float = 10.0  # هامش الثقة لاستبدال القرار (%)
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
@@ -1395,12 +1407,18 @@ def position_size(balance, entry, sl):
     return risk_usdt / sl_dist
 
 
+# ══════════════════════════════════════════════════════════════
+# ✅ محلل الذكاء الاصطناعي المزدوج (Dual-Model Consensus)
+#    Mixtral 8x7B (سريع) + GPT-OSS-20B (قوي) يعملان بالتوازي
+#    - أول رد خلال 2 ثانية يُعتمد
+#    - إذا وصل النموذج الآخر خلال 2 ثانية إضافية وكان أكثر ثقة
+#      بـ 10%، يتم استبدال القرار قبل التنفيذ
+# ══════════════════════════════════════════════════════════════
 class AIAnalyst:
-    def analyze(self, symbol, apex_out):
-        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
-        if not CFG.use_ai_veto and not CFG.use_ai_explainer:
-            return result
-        prompt = f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
+    INVOKE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+    def _build_prompt(self, symbol, apex_out):
+        return f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
 
 العملة: {symbol}
 قرار APEX: {apex_out.decision.value}
@@ -1420,10 +1438,12 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 
 أجب JSON فقط:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
+
+    def _call_model_sync(self, prompt, model, api_key, label):
+        """استدعاء متزامن لنموذج واحد عبر NVIDIA API (يعيد dict أو None عند الفشل)"""
         try:
-            invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
             headers = {
-                "Authorization": f"Bearer {CFG.nvidia_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Accept": "application/json",
             }
             payload = {
@@ -1431,14 +1451,14 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
                     {"role": "system", "content": "/think"},
                     {"role": "user", "content": prompt}
                 ],
-                "model": CFG.ai_model,
+                "model": model,
                 "reasoning_effort": "high",
                 "max_tokens": 16384,
                 "stream": False,
                 "temperature": 0.7,
                 "top_p": 1
             }
-            response = requests.post(invoke_url, headers=headers, json=payload, timeout=60)
+            response = requests.post(self.INVOKE_URL, headers=headers, json=payload, timeout=8)
             resp_json = response.json()
             raw = resp_json["choices"][0]["message"]["content"] or ""
             cleaned = raw.strip()
@@ -1449,16 +1469,111 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
             if js >= 0 and je > js:
                 cleaned = cleaned[js:je]
             dj = json.loads(cleaned)
-            result["decision"] = str(dj.get("decision", "WAIT")).upper()
-            if result["decision"] not in ("BUY", "SELL", "WAIT"):
+            decision = str(dj.get("decision", "WAIT")).upper()
+            if decision not in ("BUY", "SELL", "WAIT"):
+                decision = "WAIT"
+            return {
+                "decision": decision,
+                "confidence": max(0, min(100, float(dj.get("confidence", 0)))),
+                "explanation": str(dj.get("explanation", "")),
+                "risk_warnings": dj.get("risk_warnings", []),
+                "error": False,
+                "model": label,
+            }
+        except Exception as e:
+            logger.warning(f"AI [{label}] ERROR: {e}")
+            return None
+
+    async def _call_model_async(self, prompt, model, api_key, label):
+        """تشغيل الاستدعاء المتزامن في thread منفصل لتحقيق التوازي الحقيقي"""
+        return await asyncio.to_thread(self._call_model_sync, prompt, model, api_key, label)
+
+    async def _get_ai_decision(self, prompt):
+        # إطلاق النموذجين بالتوازي
+        task_mixtral = asyncio.create_task(
+            self._call_model_async(prompt, CFG.ai_model, CFG.nvidia_api_key, "MIXTRAL"))
+        task_gptoss = asyncio.create_task(
+            self._call_model_async(prompt, CFG.ai_model_oss, CFG.nvidia_api_key_oss, "GPT-OSS"))
+
+        # المرحلة 1: انتظار أول رد خلال 2 ثانية
+        done, pending = await asyncio.wait(
+            [task_mixtral, task_gptoss],
+            timeout=CFG.ai_first_timeout,
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if done:
+            first_task = list(done)[0]
+            first = first_task.result()
+            other_task = task_gptoss if first_task is task_mixtral else task_mixtral
+
+            # إذا فشل الأول (None)، ننتظر الثاني
+            if first is None:
+                try:
+                    second = await asyncio.wait_for(other_task, timeout=CFG.ai_second_timeout)
+                    return second
+                except asyncio.TimeoutError:
+                    return None
+
+            # المرحلة 2: انتظر النموذج الآخر حتى 2 ثانية إضافية
+            try:
+                second = await asyncio.wait_for(other_task, timeout=CFG.ai_second_timeout)
+                # إذا كان الثاني أكثر ثقة بهامش محدد، استبدل القرار
+                if second and second.get("confidence", 0) > first.get("confidence", 0) + CFG.ai_upgrade_margin:
+                    logger.info(
+                        f"🔁 AI UPGRADE: {second.get('model')} (Conf={second['confidence']:.0f}) "
+                        f"replaces {first.get('model')} (Conf={first['confidence']:.0f})")
+                    return second
+            except asyncio.TimeoutError:
+                pass
+            return first
+
+        # لم يجب أحد خلال 2 ثانية → انتظر 2 ثانية إضافية (إجمالي 4)
+        done, pending = await asyncio.wait(
+            [task_mixtral, task_gptoss],
+            timeout=CFG.ai_second_timeout,
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        if done:
+            res = list(done)[0].result()
+            for t in pending:
+                t.cancel()
+            return res
+
+        # إلغاء كل المهام المعلقة
+        for t in pending:
+            t.cancel()
+        return None
+
+    def analyze(self, symbol, apex_out):
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
+        if not CFG.use_ai_veto and not CFG.use_ai_explainer:
+            return result
+        prompt = self._build_prompt(symbol, apex_out)
+        try:
+            chosen = asyncio.run(self._get_ai_decision(prompt))
+            if chosen is None:
                 result["decision"] = "WAIT"
-            result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
-            result["explanation"] = str(dj.get("explanation", ""))
-            result["risk_warnings"] = dj.get("risk_warnings", [])
-            logger.info(f"AI {symbol}: {result['decision']} | Conf={result['confidence']} | {result['explanation'][:80]}")
+                result["confidence"] = 0
+                result["error"] = True
+                result["explanation"] = "AI_ERROR: both models timeout/failed"
+                logger.warning(f"AI {symbol}: BOTH MODELS FAILED/TIMEOUT")
+                return result
+            result = {
+                "decision": chosen.get("decision", "WAIT"),
+                "confidence": chosen.get("confidence", 0.0),
+                "explanation": chosen.get("explanation", ""),
+                "risk_warnings": chosen.get("risk_warnings", []),
+                "error": chosen.get("error", False),
+            }
+            logger.info(
+                f"AI {symbol} [{chosen.get('model')}]: {result['decision']} | "
+                f"Conf={result['confidence']} | {result['explanation'][:80]}")
         except Exception as e:
             logger.warning(f"AI ERROR {symbol}: {e}")
-            result["decision"] = "WAIT"; result["confidence"] = 0; result["error"] = True
+            result["decision"] = "WAIT"
+            result["confidence"] = 0
+            result["error"] = True
             result["explanation"] = f"AI_ERROR: {str(e)[:100]}"
         return result
 
@@ -2083,6 +2198,7 @@ def main():
     logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
     logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
     logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=90s, Explosive≥96)")
+    logger.info(f"   AI Dual-Model: {CFG.ai_model} (Mixtral) + {CFG.ai_model_oss} (GPT-OSS) ⚡")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
     logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
