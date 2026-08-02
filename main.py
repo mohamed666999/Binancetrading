@@ -1764,18 +1764,13 @@ def execute_trade(sym, final):
         try:
             st["executing"] = True
 
-            # ══════════════════════════════════════════════════════════
-            # ✅ نظام تتبع أسباب الرفض (Reason Codes) — شفافية السجلات
-            # ══════════════════════════════════════════════════════════
-            # تتبع أسباب عدم الدخول بدقة
+            # تتبع أسباب الرفض بذكاء دون إيقاف التنفيذ العشوائي
             reasons = []
 
-            # فحص المراكز المفتوحة
             current_pos = get_pos(sym)
             if current_pos and current_pos != "ERROR":
                 reasons.append("POSITION_ALREADY_OPEN")
 
-            # فحص الطلبات المعلقة
             try:
                 open_orders = exchange.fetch_open_orders(sym)
                 if open_orders:
@@ -1783,21 +1778,23 @@ def execute_trade(sym, final):
             except Exception:
                 pass
 
-            # فحص الحد اليومي والخصائص
             if daily_pnl_pct() <= -CFG.max_daily_loss_pct:
                 reasons.append("MAX_DAILY_LOSS_REACHED")
             if db.consecutive_losses() >= CFG.max_consecutive_losses:
                 reasons.append("MAX_CONSECUTIVE_LOSSES_REACHED")
-            if db.count_today() >= CFG.max_daily_trades:
-                reasons.append("MAX_DAILY_TRADES_REACHED")
-            if db.open_count() >= CFG.max_open_positions:
-                reasons.append("MAX_OPEN_POSITIONS_REACHED")
 
-            # إذا كانت هناك أسباب تمنع التنفيذ، قم بطباعتها واخرج بصمت دون تدمير الكود
-            if reasons:
+            # إذا وجدت أسباب منع حقيقية (مثل وجود صفقة مفتوحة فعلياً)، نتوقف هنا
+            if "POSITION_ALREADY_OPEN" in reasons or "MAX_DAILY_LOSS_REACHED" in reasons:
                 logger.warning(f"❌ NO TRADE [{sym}] | Reason Codes: {' | '.join(reasons)}")
                 return
-            # ══════════════════════════════════════════════════════════
+
+            # إذا كانت أسباب عادية (مثل طلبات معلقة)، نقوم بتنظيفها ومتابعة الصفقة بشكل طبيعي!
+            if "MANUAL_PENDING_ORDER" in reasons:
+                logger.info(f"🧹 تنظيف طلبات معلقة لـ {sym} لمتابعة تنفيذ الصفقة...")
+                try:
+                    exchange.cancel_all_orders(sym)
+                except Exception:
+                    pass
 
             if time.time() - st.get("t", 0) < CFG.cooldown_seconds:
                 return
