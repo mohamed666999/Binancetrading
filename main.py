@@ -409,7 +409,6 @@ class Config:
     risk_per_trade_pct: float = 3.0
     # ══════════════════════════════════════════════════════════
     # ✅ إعدادات المستويات الأربعة الهرمية (Tier System)
-    # المستويات: 1 (عادي)، 2 (متوسط)، 3 (متقدم)، 4 (قناص ذهبي)
     # ══════════════════════════════════════════════════════════
     tier_levels_enabled: bool = True
     trailing_enabled: bool = True
@@ -426,10 +425,10 @@ class Config:
     # ══════════════════════════════════════════════════════════
     # ✅ تخفيف الفلاتر قليلاً لزيادة الفرص المتاحة
     # ══════════════════════════════════════════════════════════
-    min_signal_score: float = 52.0    # (كانت 58.0)
-    min_confidence: float = 45.0      # (كانت 52.0)
-    min_module_agreement: int = 3     # (كانت 4)
-    min_entry_quality: float = 48.0   # (كانت 52.0)
+    min_signal_score: float = 52.0
+    min_confidence: float = 45.0
+    min_module_agreement: int = 3
+    min_entry_quality: float = 48.0
     max_risk_for_entry: float = 48.0
     min_momentum_score: float = 45.0
     min_trend_alignment: int = 2
@@ -469,18 +468,6 @@ class Config:
 
 
 CFG = Config()
-
-
-# ══════════════════════════════════════════════════════════════
-# ✅ Reason Codes Reference (مرجعية أكواد أسباب الرفض)
-# ══════════════════════════════════════════════════════════════
-# POSITION_ALREADY_OPEN
-# MANUAL_PENDING_ORDER
-# MAX_DAILY_LOSS_REACHED
-# MAX_CONSECUTIVE_LOSSES_REACHED
-# MAX_DAILY_TRADES_REACHED
-# MAX_OPEN_POSITIONS_REACHED
-# ══════════════════════════════════════════════════════════════
 
 
 class Direction(Enum):
@@ -1171,25 +1158,12 @@ class TradeDB:
 db = TradeDB(CFG.db_path)
 
 
-# ══════════════════════════════════════════════════════════════
-# ✅ دالة مساعدة: عدد الصفقات الحقيقية المفتوحة من بينانس مباشرة
-#    تُستخدم بدلاً من db.open_count() لتجنب الأرقام الوهمية
-# ══════════════════════════════════════════════════════════════
-def live_open_positions_count():
-    try:
-        positions = exchange.fetch_positions()
-        return sum(1 for p in positions if float(p.get("contracts", 0)) > 0)
-    except Exception as e:
-        logger.warning(f"⚠️ فشل الاتصال ببينانس لفحص الصفقات، الاعتماد على الداتا بيز مؤقتاً: {e}")
-        return db.open_count()
-
-
 class PositionMonitor:
     def __init__(self, exchange, db_instance: TradeDB, config: Config):
         self.exchange = exchange
         self.db = db_instance
         self.cfg = config
-        self.trailing_peaks: Dict[str, float] = {}  # الاعتماد على رمز العملة
+        self.trailing_peaks: Dict[str, float] = {}
         self._run = True
 
     def start(self):
@@ -1208,7 +1182,6 @@ class PositionMonitor:
             time.sleep(self.cfg.monitor_interval)
 
     def monitor_live_positions(self):
-        # 1. جلب الصفقات المفتوحة فعلياً من بينانس مباشرة
         try:
             positions = self.exchange.fetch_positions()
             active_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
@@ -1221,7 +1194,7 @@ class PositionMonitor:
 
         for p in active_positions:
             symbol = p['symbol']
-            side = p['side'].upper()  # 'LONG' or 'SHORT'
+            side = p['side'].upper()
             qty = float(p['contracts'])
             entry_price = float(p['entryPrice'])
 
@@ -1230,10 +1203,8 @@ class PositionMonitor:
             except Exception:
                 continue
 
-            # حساب الأهداف الوهمية لتتبع الأرباح
             tp_price = entry_price * (1 + self.cfg.max_tp_percent / 100) if side == "LONG" else entry_price * (1 - self.cfg.max_tp_percent / 100)
 
-            # نظام تتبع الأرباح الحي (Trailing Stop)
             if self.cfg.trailing_enabled:
                 if side == "LONG":
                     current_distance = current_price - entry_price
@@ -1251,7 +1222,6 @@ class PositionMonitor:
 
                 peak = self.trailing_peaks[symbol]
 
-                # الإغلاق الآلي عند التراجع من القمة
                 if peak >= self.cfg.trailing_activation:
                     if progress <= (peak - self.cfg.trailing_drop):
                         logger.info(f"🚀 Trailing Stop Activated for {symbol}! Securing profit.")
@@ -1260,19 +1230,16 @@ class PositionMonitor:
 
     def close_position_direct(self, symbol, side, qty, exit_price, reason):
         try:
-            # 1. إغلاق الصفقة بسعر السوق
             close_side = 'sell' if side == 'LONG' else 'buy'
             self.exchange.create_market_order(symbol, close_side, qty, params={"reduceOnly": True})
             logger.info(f"✅ تم إغلاق صفقة {symbol} بسبب: {reason}")
 
-            # 2. تنظيف كل الطلبات الشبحية فوراً (أهم سطر لحل مشكلتك)
             self.exchange.cancel_all_orders(symbol)
             logger.info(f"🧹 تم تنظيف جميع الطلبات المعلقة المرتبطة بعملة {symbol}")
 
             if symbol in self.trailing_peaks:
                 del self.trailing_peaks[symbol]
 
-            # تحديث الداتا بيز للتسجيل فقط (Logging)
             open_trades = [t for t in self.db.get_open_trades() if t["symbol"] == symbol]
             for t in open_trades:
                 entry = t['entry_price']
@@ -1539,27 +1506,22 @@ active_lock = threading.Lock()
 
 # ══════════════════════════════════════════════════════════════
 # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool & Ranking)
-#    يجمع الفرص، يحسب Opportunity Score المركب، يرتبها، وينفذ الأفضل
-#    أو يدخل فوراً إذا كانت الفرصة استثنائية (Score ≥ 96)
 # ══════════════════════════════════════════════════════════════
 class OpportunityPool:
     def __init__(self, max_size=5, ttl_seconds=90):
-        self.pool = []  # قائمة لتخزين الفرص المتاحة
+        self.pool = []
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
         self.lock = threading.Lock()
 
     def add_or_update(self, symbol, final, apex_out):
         with self.lock:
-            # التأكد من عدم تكرار نفس العملة في الـ Pool
             self.pool = [item for item in self.pool if item["symbol"] != symbol]
 
-            # حساب المؤشر المركب للفرصة (Opportunity Score)
-            # 40% Final Score + 25% Confidence + 15% Risk/Reward + 10% Volume Quality + 10% Momentum
             rr_val = getattr(apex_out, 'rr_ratio', 2.0)
             rr_score = clamp((rr_val / 4.0) * 100, 0, 100)
             vol_quality = 70.0 if getattr(apex_out, 'volume_spike', False) else 50.0
-            momentum_score = 60.0  # قيمة اعتبارية أو مستخرجة من الزخم
+            momentum_score = 60.0
 
             opp_score = (
                 (final.final_score * 0.40) +
@@ -1578,29 +1540,24 @@ class OpportunityPool:
             }
 
             self.pool.append(item)
-            # ترتيب القناص التنافسي تنازلياً حسب الـ Opportunity Score
             self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
 
-            # الحفاظ على الحد الأقصى للحجم (لا تجمع أكثر من 5 فرص)
             if len(self.pool) > self.max_size:
                 self.pool = self.pool[:self.max_size]
 
     def clean_expired(self):
         with self.lock:
             now = time.time()
-            # إزالة الفرص التي تجاوزت مدة الصلاحية (TTL)
             self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
 
     def get_best_opportunity(self):
         with self.lock:
             now = time.time()
-            # إزالة الفرص المنتهية داخلياً
             self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
             if not self.pool:
                 return None
-            # إعادة ترتيب وتصدير أفضل فرصة
             self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
-            return self.pool.pop(0)  # أخذها وحذفها من القائمة بعد التنفيذ
+            return self.pool.pop(0)
 
 
 opp_pool = OpportunityPool(max_size=5, ttl_seconds=90)
@@ -1807,15 +1764,18 @@ class MarketScanner:
         # محاولة اختيار أفضل فرصة متاح تنفيذها الآن
         best_opp = opp_pool.get_best_opportunity()
         if best_opp:
-            # 🔴 الفحص المباشر من بينانس لعدد الصفقات الحقيقية المفتوحة
-            #    (بدلاً من db.open_count() لتجنب الأرقام الوهمية غير المتزامنة)
-            live_open_count = live_open_positions_count()
-
-            if live_open_count < CFG.max_open_positions:
-                logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] تنفيذ صفقة {best_opp['symbol']} | OppScore={best_opp['opp_score']:.1f} | Live Positions: {live_open_count}/{CFG.max_open_positions}")
-                execute_trade(best_opp["symbol"], best_opp["final"])
-            else:
-                logger.warning(f"⏳ تم تأجيل الصفقة الفائزة [{best_opp['symbol']}] لأن الحد الأقصى للصفقات الحقيقية ممتلئ ({live_open_count}/{CFG.max_open_positions}).")
+            try:
+                # جلب المراكز المفتوحة الفعلية من بينانس مباشرة لتجنب أخطاء قاعدة البيانات المحلية
+                positions = exchange.fetch_positions()
+                active_positions = len([p for p in positions if float(p.get("contracts", 0)) > 0])
+                
+                if active_positions < CFG.max_open_positions:
+                    logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] اختيار أفضل فرصة بالسوق: {best_opp['symbol']} بقيمة OppScore={best_opp['opp_score']:.1f}")
+                    execute_trade(best_opp["symbol"], best_opp["final"])
+                else:
+                    logger.warning(f"⏳ تم تأجيل الدخول في {best_opp['symbol']} لوصولك للحد الأقصى للصفقات المفتوحة فعلياً ({active_positions}/{CFG.max_open_positions})")
+            except Exception as e:
+                logger.error(f"⚠️ خطأ في فحص الصفقات المفتوحة المباشرة: {e}")
         # ══════════════════════════════════════════════════════════
 
     def _load(self, sk, sym):
@@ -1927,7 +1887,6 @@ def execute_trade(sym, final):
 
             # ══════════════════════════════════════════════════════════
             # ✅ منطق الإجماع متعدد الطبقات وتحديد المستوى الهرمي (Tier)
-            #    يقيس مدى اتفاق المؤشرات + الذكاء الاصطناعي + الفلاتر الخارجية
             # ══════════════════════════════════════════════════════════
             agreement_score = final.final_score
             consensus_boost = 0
@@ -1963,7 +1922,6 @@ def execute_trade(sym, final):
                     applied_leverage = CFG.leverage
                     risk_multiplier = 0.8
             else:
-                # في حال تعطيل نظام المستويات: نستخدم الإعدادات الأساسية
                 tier = 1
                 applied_leverage = CFG.leverage
                 risk_multiplier = 1.0
