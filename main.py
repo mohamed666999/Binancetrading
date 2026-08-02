@@ -423,10 +423,13 @@ class Config:
     min_rr_ratio: float = 2.0
     max_daily_loss_pct: float = 4.0
     max_consecutive_losses: int = 4
-    min_signal_score: float = 58.0
-    min_confidence: float = 52.0
-    min_module_agreement: int = 4
-    min_entry_quality: float = 52.0
+    # ══════════════════════════════════════════════════════════
+    # ✅ تخفيف الفلاتر قليلاً لزيادة الفرص المتاحة
+    # ══════════════════════════════════════════════════════════
+    min_signal_score: float = 52.0    # (كانت 58.0)
+    min_confidence: float = 45.0      # (كانت 52.0)
+    min_module_agreement: int = 3     # (كانت 4)
+    min_entry_quality: float = 48.0   # (كانت 52.0)
     max_risk_for_entry: float = 48.0
     min_momentum_score: float = 45.0
     min_trend_alignment: int = 2
@@ -1518,6 +1521,75 @@ active_symbols = {}
 active_lock = threading.Lock()
 
 
+# ══════════════════════════════════════════════════════════════
+# ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool & Ranking)
+#    يجمع الفرص، يحسب Opportunity Score المركب، يرتبها، وينفذ الأفضل
+#    أو يدخل فوراً إذا كانت الفرصة استثنائية (Score ≥ 96)
+# ══════════════════════════════════════════════════════════════
+class OpportunityPool:
+    def __init__(self, max_size=5, ttl_seconds=90):
+        self.pool = []  # قائمة لتخزين الفرص المتاحة
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self.lock = threading.Lock()
+
+    def add_or_update(self, symbol, final, apex_out):
+        with self.lock:
+            # التأكد من عدم تكرار نفس العملة في الـ Pool
+            self.pool = [item for item in self.pool if item["symbol"] != symbol]
+
+            # حساب المؤشر المركب للفرصة (Opportunity Score)
+            # 40% Final Score + 25% Confidence + 15% Risk/Reward + 10% Volume Quality + 10% Momentum
+            rr_val = getattr(apex_out, 'rr_ratio', 2.0)
+            rr_score = clamp((rr_val / 4.0) * 100, 0, 100)
+            vol_quality = 70.0 if getattr(apex_out, 'volume_spike', False) else 50.0
+            momentum_score = 60.0  # قيمة اعتبارية أو مستخرجة من الزخم
+
+            opp_score = (
+                (final.final_score * 0.40) +
+                (apex_out.confidence * 0.25) +
+                (rr_score * 0.15) +
+                (vol_quality * 0.10) +
+                (momentum_score * 0.10)
+            )
+
+            item = {
+                "symbol": symbol,
+                "final": final,
+                "apex": apex_out,
+                "opp_score": opp_score,
+                "timestamp": time.time()
+            }
+
+            self.pool.append(item)
+            # ترتيب القناص التنافسي تنازلياً حسب الـ Opportunity Score
+            self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
+
+            # الحفاظ على الحد الأقصى للحجم (لا تجمع أكثر من 5 فرص)
+            if len(self.pool) > self.max_size:
+                self.pool = self.pool[:self.max_size]
+
+    def clean_expired(self):
+        with self.lock:
+            now = time.time()
+            # إزالة الفرص التي تجاوزت مدة الصلاحية (TTL)
+            self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
+
+    def get_best_opportunity(self):
+        with self.lock:
+            now = time.time()
+            # إزالة الفرص المنتهية داخلياً
+            self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
+            if not self.pool:
+                return None
+            # إعادة ترتيب وتصدير أفضل فرصة
+            self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
+            return self.pool.pop(0)  # أخذها وحذفها من القائمة بعد التنفيذ
+
+
+opp_pool = OpportunityPool(max_size=5, ttl_seconds=90)
+
+
 class MarketScanner:
     def __init__(self):
         self._run = True
@@ -1701,7 +1773,32 @@ class MarketScanner:
         if final.final_score < CFG.min_confidence:
             logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}")
             return
-        execute_trade(sym, final)
+
+        # ══════════════════════════════════════════════════════════
+        # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool)
+        # ══════════════════════════════════════════════════════════
+        # فحص ما إذا كانت الفرصة "استثنائية" لتجاوز الانتظار والدخول الفوري
+        is_explosive_sniper = (final.final_score >= 96.0 and apex.confidence >= 97.0)
+
+        if is_explosive_sniper:
+            logger.critical(f"⚡ [EXPLOSIVE SNIPER TRIGGERED] التنفيذ الفوري لعملة {sym} | Score={final.final_score:.1f}")
+            execute_trade(sym, final)
+            return
+
+        # خلاف ذلك، أضفها إلى حوض التجميع التنافسي (Opportunity Pool)
+        opp_pool.add_or_update(sym, final, apex)
+
+        # محاولة اختيار أفضل فرصة متاح تنفيذها الآن بشرط عدم وجود سيولة مستنزفة
+        best_opp = opp_pool.get_best_opportunity()
+        if best_opp:
+            # التحقق من أن رأس المال / المراكز المفتوحة تسمح
+            if db.open_count() < CFG.max_open_positions:
+                logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] اختيار أفضل فرصة بالسوق: {best_opp['symbol']} بقيمة OppScore={best_opp['opp_score']:.1f}")
+                execute_trade(best_opp["symbol"], best_opp["final"])
+            else:
+                # إذا كانت المراكز ممتلئة، نعيد إضافتها بحذر أو نتجاوز مؤقتاً
+                pass
+        # ══════════════════════════════════════════════════════════
 
     def _load(self, sk, sym):
         for tf in CFG.timeframes:
@@ -1985,6 +2082,7 @@ def main():
     logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
     logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
+    logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=90s, Explosive≥96)")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
     logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
