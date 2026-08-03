@@ -1506,9 +1506,15 @@ active_lock = threading.Lock()
 
 # ══════════════════════════════════════════════════════════════
 # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool & Ranking)
+#    التعديلات:
+#    1- لا تحذف الفرصة عند مجرد اختيارها (pool[0] بدل pop)
+#    2- أضف دالة remove للحذف عند نجاح التنفيذ
+#    3- مدة الاحتفاظ 300 ثانية بدل 90
+#    4- لا تضيع الفرصة إذا فشل التنفيذ
+#    5- إذا فشلت الأولى جرّب الثانية
 # ══════════════════════════════════════════════════════════════
 class OpportunityPool:
-    def __init__(self, max_size=5, ttl_seconds=90):
+    def __init__(self, max_size=5, ttl_seconds=300):
         self.pool = []
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
@@ -1550,17 +1556,26 @@ class OpportunityPool:
             now = time.time()
             self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
 
+    # ✅ التعديل 1: لا تحذف الفرصة عند مجرد اختيارها
     def get_best_opportunity(self):
         with self.lock:
             now = time.time()
-            self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
+            self.pool = [
+                item for item in self.pool
+                if (now - item["timestamp"]) < self.ttl_seconds
+            ]
             if not self.pool:
                 return None
             self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
-            return self.pool.pop(0)
+            return self.pool[0]
+
+    # ✅ التعديل 2: دالة حذف عند نجاح التنفيذ
+    def remove(self, symbol):
+        with self.lock:
+            self.pool = [x for x in self.pool if x["symbol"] != symbol]
 
 
-opp_pool = OpportunityPool(max_size=5, ttl_seconds=90)
+opp_pool = OpportunityPool(max_size=5, ttl_seconds=300)
 
 
 class MarketScanner:
@@ -1761,21 +1776,39 @@ class MarketScanner:
         # خلاف ذلك، أضفها إلى حوض التجميع التنافسي (Opportunity Pool)
         opp_pool.add_or_update(sym, final, apex)
 
-        # محاولة اختيار أفضل فرصة متاح تنفيذها الآن
-        best_opp = opp_pool.get_best_opportunity()
-        if best_opp:
+        # ══════════════════════════════════════════════════════════
+        # ✅ التعديل 5: إذا فشلت الأولى جرّب الثانية (while loop)
+        # ══════════════════════════════════════════════════════════
+        while True:
+            best_opp = opp_pool.get_best_opportunity()
+
+            if best_opp is None:
+                break
+
+            # فحص المراكز المفتوحة الفعلية من بينانس مباشرة
             try:
-                # جلب المراكز المفتوحة الفعلية من بينانس مباشرة لتجنب أخطاء قاعدة البيانات المحلية
                 positions = exchange.fetch_positions()
                 active_positions = len([p for p in positions if float(p.get("contracts", 0)) > 0])
-                
-                if active_positions < CFG.max_open_positions:
-                    logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] اختيار أفضل فرصة بالسوق: {best_opp['symbol']} بقيمة OppScore={best_opp['opp_score']:.1f}")
-                    execute_trade(best_opp["symbol"], best_opp["final"])
-                else:
-                    logger.warning(f"⏳ تم تأجيل الدخول في {best_opp['symbol']} لوصولك للحد الأقصى للصفقات المفتوحة فعلياً ({active_positions}/{CFG.max_open_positions})")
             except Exception as e:
                 logger.error(f"⚠️ خطأ في فحص الصفقات المفتوحة المباشرة: {e}")
+                break
+
+            if active_positions >= CFG.max_open_positions:
+                logger.warning(f"⏳ تم تأجيل الدخول في {best_opp['symbol']} لوصولك للحد الأقصى للصفقات المفتوحة فعلياً ({active_positions}/{CFG.max_open_positions})")
+                break
+
+            logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] محاولة تنفيذ: {best_opp['symbol']} بقيمة OppScore={best_opp['opp_score']:.1f}")
+
+            # ✅ التعديل 4: لا تضيع الفرصة إذا فشل التنفيذ
+            ok = execute_trade(best_opp["symbol"], best_opp["final"])
+
+            if ok:
+                opp_pool.remove(best_opp["symbol"])
+                break
+            else:
+                # فشلت هذه الفرصة، احذفها وجرّب التالية
+                opp_pool.remove(best_opp["symbol"])
+                logger.info(f"🔄 فشلت صفقة {best_opp['symbol']}، محاولة الفرصة التالية...")
         # ══════════════════════════════════════════════════════════
 
     def _load(self, sk, sym):
@@ -1835,10 +1868,13 @@ def emergency_close(sym, reason):
         logger.critical(f"❌ فشل إغلاق الصفقة (Emergency fail): {e}")
 
 
+# ══════════════════════════════════════════════════════════════
+# ✅ التعديل 4: execute_trade ترجع True عند النجاح و False عند الفشل
+# ══════════════════════════════════════════════════════════════
 def execute_trade(sym, final):
     st = trade_state.setdefault(sym, {})
     if st.get("executing", False):
-        return
+        return False
 
     with execution_lock:
         try:
@@ -1866,7 +1902,7 @@ def execute_trade(sym, final):
             # إذا وجدت أسباب منع حقيقية (مثل وجود صفقة مفتوحة فعلياً)، نتوقف هنا
             if "POSITION_ALREADY_OPEN" in reasons or "MAX_DAILY_LOSS_REACHED" in reasons:
                 logger.warning(f"❌ NO TRADE [{sym}] | Reason Codes: {' | '.join(reasons)}")
-                return
+                return False
 
             # إذا كانت أسباب عادية (مثل طلبات معلقة)، نقوم بتنظيفها ومتابعة الصفقة بشكل طبيعي!
             if "MANUAL_PENDING_ORDER" in reasons:
@@ -1877,7 +1913,7 @@ def execute_trade(sym, final):
                     pass
 
             if time.time() - st.get("t", 0) < CFG.cooldown_seconds:
-                return
+                return False
 
             price = exchange_public.fetch_ticker(sym)["last"]
             side = "buy" if final.decision == Decision.BUY else "sell"
@@ -1905,20 +1941,20 @@ def execute_trade(sym, final):
             # تحديد المستويات الأربعة بناءً على الإجماع الحقيقي
             if CFG.tier_levels_enabled:
                 if net_score >= 90.0 and final.tf_alignment >= 8:
-                    tier = 4  # 🎯 القناص الذهبي (إجماع تام + ثقة قصوى)
+                    tier = 4
                     applied_leverage = CFG.leverage * 2
                     risk_multiplier = 2.0
                     logger.info(f"💎 [GOLDEN SNIPER - CONSENSUS REACHED] {sym} | Net Score: {net_score:.1f}")
                 elif net_score >= 78.0 and final.tf_alignment >= 6:
-                    tier = 3  # 🚀 المستوى الثالث (توافق قوي)
+                    tier = 3
                     applied_leverage = int(CFG.leverage * 1.5)
                     risk_multiplier = 1.5
                 elif net_score >= 65.0:
-                    tier = 2  # 🛡️ المستوى الثاني (توافق متوسط)
+                    tier = 2
                     applied_leverage = CFG.leverage
                     risk_multiplier = 1.0
                 else:
-                    tier = 1  # ⚖️ المستوى الأول (إجماع ضعيف أو تحفظي)
+                    tier = 1
                     applied_leverage = CFG.leverage
                     risk_multiplier = 0.8
             else:
@@ -1930,21 +1966,21 @@ def execute_trade(sym, final):
 
             balance = get_balance()
             if balance <= 0:
-                return
+                return False
 
             # حساب الحجم بناءً على مضاعف المخاطرة للمستوى الهرمي
             base_risk = CFG.risk_per_trade_pct * risk_multiplier
             qty = (balance * base_risk / 100) / abs(price - sl_price) if abs(price - sl_price) > 0 else 0.0
             qty = float(exchange.amount_to_precision(sym, qty))
             if qty <= 0:
-                return
+                return False
             # ══════════════════════════════════════════════════════════
 
             if CFG.dry_run:
                 st["t"] = time.time()
                 db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price, confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
                 logger.info(f"✅ DRY RUN Trade Executed for {sym} | TIER {tier}")
-                return
+                return True
 
             # تطبيق الرافعة المخصصة للمستوى الهرمي على بينانس
             try:
@@ -1964,14 +2000,14 @@ def execute_trade(sym, final):
 
             if not p or p == "ERROR":
                 logger.critical(f"❌ خطأ حرج: لم يتم العثور على المركز بعد إرسال الطلب لـ {sym}")
-                return
+                return False
 
             entry = float(p.get("entryPrice", price))
             aqty = abs(float(p.get("contracts", 0)))
 
             if aqty <= 0:
                 emergency_close(sym, "الكمية المفتوحة صفر")
-                return
+                return False
 
             sl_price = entry * (1 - final.sl_percent / 100) if side == "buy" else entry * (1 + final.sl_percent / 100)
             tp_price = entry * (1 + final.tp_percent / 100) if side == "buy" else entry * (1 - final.tp_percent / 100)
@@ -1988,7 +2024,7 @@ def execute_trade(sym, final):
             except Exception as e:
                 logger.critical(f"SL fail: {e}")
                 emergency_close(sym, "فشل وضع SL")
-                return
+                return False
 
             try:
                 tpo = exchange.create_order(sym, "TAKE_PROFIT_MARKET", cs, aqty, None, {"stopPrice": tp_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
@@ -1999,16 +2035,18 @@ def execute_trade(sym, final):
                     try: exchange.cancel_order(sloid, sym)
                     except Exception: pass
                 emergency_close(sym, "فشل وضع TP")
-                return
+                return False
 
             st["t"] = time.time()
 
             tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f} | TIER={tier}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
             logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | TIER {tier} | Lev x{applied_leverage}")
+            return True
 
         except Exception as e:
             logger.error(f"Exec Error: {e}")
             emergency_close(sym, str(e))
+            return False
 
         finally:
             st["executing"] = False
@@ -2058,7 +2096,7 @@ def main():
     logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
     logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
-    logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=90s, Explosive≥96)")
+    logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=300s, Explosive≥96)")
     logger.info(f"   Live Position Check: ENABLED 🔄 (فحص مباشر من بينانس)")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
