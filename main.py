@@ -521,9 +521,9 @@ class DerivativesFeed:
 
 @dataclass
 class Config:
-    binance_api_key: str = os.getenv("BINANCE_API_KEY", "")
-    binance_secret: str = os.getenv("BINANCE_SECRET", "")
-    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
+    binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
+binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
+nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
     ai_model: str = "mistralai/mistral-medium-3.5-128b"
     dry_run: bool = False
     leverage: int = 10
