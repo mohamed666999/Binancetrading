@@ -31,16 +31,8 @@ from enum import Enum
 import websockets, ccxt, requests
 from flask import Flask, jsonify, render_template_string
 from openai import OpenAI
-import requests
-import logging
 
-logger = logging.getLogger(__name__)
-
-try:
-    ip = requests.get("https://api.ipify.org", timeout=10).text
-    logger.info(f"🌍 Railway Public IP: {ip}")
-except Exception as e:
-    logger.warning(f"Cannot detect public IP: {e}")
+    
 # --- External Strategies Integration (Project B / conor19w) ---
 try:
     from adapters.conor19w_adapter import call_strategy_by_name
@@ -529,9 +521,9 @@ class DerivativesFeed:
 
 @dataclass
 class Config:
-    binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
-    binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
-    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
+    binance_api_key: str = os.getenv("BINANCE_API_KEY", "")
+    binance_secret: str = os.getenv("BINANCE_SECRET", "")
+    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
     ai_model: str = "mistralai/mistral-medium-3.5-128b"
     dry_run: bool = False
     leverage: int = 10
@@ -4177,6 +4169,27 @@ async def ws_worker():
 
 
 def main():
+    # ══════════════════════════════════════════════════════
+    # 🌍 Public IP Detection (for Binance API Whitelist)
+    # ══════════════════════════════════════════════════════
+    ip_detected = False
+    for url, name in [
+        ("https://api.ipify.org", "ipify"),
+        ("https://ifconfig.me/ip", "ifconfig"),
+        ("https://api.seeip.org", "seeip")
+    ]:
+        try:
+            ip = requests.get(url, timeout=10).text.strip()
+            if ip and len(ip) < 50:  # التأكد من أن الناتج هو IP وليس HTML
+                logger.info(f"🌍 {name} Public IP: {ip}")
+                ip_detected = True
+                break
+        except Exception as e:
+            logger.debug(f"{name} failed: {e}")
+            
+    if not ip_detected:
+        logger.warning("Cannot detect public IP automatically. Please check it manually for Binance Whitelist.")
+
     logger.info(
         "APEX v3.1 AMF starting | mode=%s | max_positions=%s",
         "DRY_RUN" if CFG.dry_run else "LIVE",
