@@ -570,6 +570,8 @@ class FinalDecision:
     tf_alignment: int = 0
     risk_score: float = 50.0
     entry_quality: float = 0.0
+    leverage: int = 10
+    signal_level: str = "NORMAL"
 
 
 class APEXEngine:
@@ -1762,6 +1764,53 @@ class MarketScanner:
             logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}")
             return
 
+        # ==========================================================
+        # Dynamic Leverage Manager
+        # لا يغير القرار إطلاقاً، فقط يحدد الرافعة
+        # ==========================================================
+
+        score = final.final_score
+        conf = apex.confidence
+        mods = final.tf_alignment
+
+        final.leverage = 10
+        final.signal_level = "NORMAL"
+
+        # فرصة قوية
+        if (
+            score >= 91
+            and conf >= 90
+            and mods >= 6
+        ):
+            final.leverage = 15
+            final.signal_level = "STRONG"
+
+        # فرصة ممتازة
+        if (
+            score >= 94
+            and conf >= 93
+            and mods >= 7
+        ):
+            final.leverage = 20
+            final.signal_level = "ELITE"
+
+        # فرصة ذهبية
+        if (
+            score >= 97
+            and conf >= 96
+            and mods >= 8
+        ):
+            final.leverage = 25
+            final.signal_level = "GOLDEN"
+
+        logger.info(
+            f"🔥 Signal={final.signal_level} "
+            f"Score={score:.1f} "
+            f"Conf={conf:.1f} "
+            f"Modules={mods} "
+            f"Lev=x{final.leverage}"
+        )
+
         # ══════════════════════════════════════════════════════════
         # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool)
         # ══════════════════════════════════════════════════════════
@@ -1984,7 +2033,7 @@ def execute_trade(sym, final):
 
             # تطبيق الرافعة المخصصة للمستوى الهرمي على بينانس
             try:
-                exchange.set_leverage(applied_leverage, sym)
+                exchange.set_leverage(final.leverage, sym)
             except Exception:
                 pass
 
@@ -2039,7 +2088,7 @@ def execute_trade(sym, final):
 
             st["t"] = time.time()
 
-            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f} | TIER={tier}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
+            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"{final.signal_level}|LEV={final.leverage}|APEX={final.apex_score:.0f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
             logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | TIER {tier} | Lev x{applied_leverage}")
             return True
 
