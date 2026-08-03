@@ -1,3 +1,4 @@
+```python
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
@@ -1570,10 +1571,10 @@ def main():
     # ✅ كشف IP الخارجي (Railway / VPS) وإضافته للـ Whitelist
     # ══════════════════════════════════════════════════════════
     try:
-        _ip = requests.get("https://api.ipify.org", timeout=10).text
-        bot_stats["current_ip"] = _ip
+        ip = requests.get("https://api.ipify.org", timeout=10).text
+        bot_stats["current_ip"] = ip
         logger.info("=" * 60)
-        logger.info(f"🌍 Railway Public IP: {_ip}")
+        logger.info(f"🌍 Railway Public IP: {ip}")
         logger.info("   ⬆️ أضف هذا الـ IP في Binance API → IP Whitelist")
         logger.info("=" * 60)
     except Exception as e:
