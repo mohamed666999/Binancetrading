@@ -258,9 +258,6 @@ def _ichimoku(highs, lows, closes):
             "tenkan": tenkan, "kijun": kijun, "senkou_a": senkou_a, "senkou_b": senkou_b}
 
 
-# ══════════════════════════════════════════════════════════════
-# ✅ دوال مساعدة لموديول ISS (بدون numpy/scipy — math فقط)
-# ══════════════════════════════════════════════════════════════
 def _entropy_manual(values):
     if not values:
         return 0.0
@@ -295,11 +292,7 @@ def _gradient_manual(values):
     return grad
 
 
-# ══════════════════════════════════════════════════════════════
-# NEW: دوال مساعدة لموديول AMF (Adaptive Momentum Fusion)
-# ══════════════════════════════════════════════════════════════
 def _heikin_ashi(opens, highs, lows, closes):
-    """حساب شموع Heikin-Ashi يدوياً"""  # NEW
     ha_o, ha_c, ha_h, ha_l = [], [], [], []
     for i in range(len(closes)):
         ha_close = (opens[i] + highs[i] + lows[i] + closes[i]) / 4
@@ -313,7 +306,6 @@ def _heikin_ashi(opens, highs, lows, closes):
     return ha_o, ha_h, ha_l, ha_c
 
 def _calc_cvd(closes, volumes, lookback=20):
-    """CVD — Cumulative Volume Delta: فرق ضغط الشراء والبيع"""  # NEW
     n = min(lookback, len(closes))
     cvd_vals = []
     running = 0.0
@@ -330,7 +322,6 @@ def _calc_cvd(closes, volumes, lookback=20):
     return cvd_vals
 
 def _detect_fvg(highs, lows, lookback=10):
-    """Fair Value Gap (ICT): فجوات القيمة العادلة"""  # NEW
     bull_fvg = []
     bear_fvg = []
     n = min(lookback, len(highs) - 2)
@@ -338,37 +329,25 @@ def _detect_fvg(highs, lows, lookback=10):
         idx = len(highs) - n + i
         if idx < 2:
             continue
-        # Bull FVG: high[idx-2] < low[idx] => gap up
         if highs[idx - 2] < lows[idx]:
             bull_fvg.append((highs[idx - 2], lows[idx]))
-        # Bear FVG: low[idx-2] > high[idx] => gap down
         if lows[idx - 2] > highs[idx]:
             bear_fvg.append((lows[idx - 2], highs[idx]))
     return bull_fvg, bear_fvg
 
 def _ema_compression_score(closes, periods=(5, 8, 13, 21)):
-    """قياس انضغاط EMA — كلما انضغط أكثر = انفجار محتمل"""  # NEW
-    n = len(closes)
-    emas = {}
-    for p in periods:
-        if n >= p:
-            emas[p] = _ema(closes, p)
-    if len(emas) < 2:
-        return 0.0, False, False
-    vals = [emas[p][-1] for p in sorted(emas.keys())]
-    price = closes[-1]
-    spread = (max(vals) - min(vals)) / price * 100
-    # تاريخ الانضغاط قبل 5 شموع
-    vals_prev = []
-    for p in sorted(emas.keys()):
-        if len(emas[p]) >= 5:
-            vals_prev.append(emas[p][-5])
-    spread_prev = (max(vals_prev) - min(vals_prev)) / closes[-5] * 100 if len(vals_prev) == len(vals) and len(closes) >= 5 else spread
-    compressing = spread < spread_prev * 0.65  # انضغاط بأكثر من 35%
-    # اتجاه الانفجار
-    sorted_periods = sorted(emas.keys())
-    breakout_up = all(emas[sorted_periods[i]][-1] > emas[sorted_periods[i + 1]][-1] for i in range(len(sorted_periods) - 1))
-    breakout_down = all(emas[sorted_periods[i]][-1] < emas[sorted_periods[i + 1]][-1] for i in range(len(sorted_periods) - 1))
+    if len(closes) < max(periods):
+        return 0.0, False, False, False
+    emas = {p: _ema(closes, p) for p in periods}
+    current = [emas[p][-1] for p in periods]
+    price = max(abs(closes[-1]), 1e-12)
+    spread = (max(current) - min(current)) / price * 100.0
+    previous = [emas[p][-5] for p in periods]
+    previous_price = max(abs(closes[-5]), 1e-12)
+    previous_spread = (max(previous) - min(previous)) / previous_price * 100.0
+    compressing = (previous_spread > 0 and spread <= previous_spread * 0.65)
+    breakout_up = all(emas[periods[i]][-1] > emas[periods[i + 1]][-1] for i in range(len(periods) - 1))
+    breakout_down = all(emas[periods[i]][-1] < emas[periods[i + 1]][-1] for i in range(len(periods) - 1))
     return spread, compressing, breakout_up, breakout_down
 
 
@@ -520,11 +499,11 @@ class DerivativesFeed:
 
 @dataclass
 class Config:
-    binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
-    binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
-    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
+    binance_api_key: str = os.getenv("BINANCE_API_KEY", "").strip()
+    binance_secret: str = os.getenv("BINANCE_SECRET", "").strip()
+    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "").strip()
     ai_model: str = "mistralai/mistral-medium-3.5-128b"
-    dry_run: bool = False
+    dry_run: bool = True
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
     tier_levels_enabled: bool = True
@@ -532,7 +511,7 @@ class Config:
     trailing_activation: float = 80.0
     trailing_drop: float = 9.0
     max_daily_trades: int = 12
-    max_open_positions: int = 5          # MODIFIED: من 2 إلى 5 صفقات متزامنة
+    max_open_positions: int = 5
     cooldown_seconds: int = 120
     max_sl_percent: float = 2.0
     max_tp_percent: float = 5.0
@@ -563,39 +542,26 @@ class Config:
     monitor_interval: int = 10
     trailing_stop_pct: float = 1.2
     flask_port: int = 8080
-    # ══════════════════════════════════════════════════════
-    # NEW: نظام 5 فتحات — كل فتحة لها شروطها ورافعتها
-    # Slot 1-2: شروط عادية (min_signal_score / min_confidence)
-    # Slot 3:   إشارة أقوى + رافعة x1.5
-    # Slot 4:   إشارة أقوى جداً + رافعة x2.0
-    # Slot 5:   SNIPER فقط — أشد الشروط + رافعة x2.5
-    # ══════════════════════════════════════════════════════
-    slot3_min_score: float = 68.0         # NEW: الحد الأدنى للسكور في الفتحة 3
-    slot3_min_confidence: float = 60.0    # NEW: الحد الأدنى للثقة في الفتحة 3
-    slot3_leverage_mult: float = 1.5      # NEW: مضاعف الرافعة للفتحة 3
-
-    slot4_min_score: float = 78.0         # NEW: الحد الأدنى للسكور في الفتحة 4
-    slot4_min_confidence: float = 70.0    # NEW: الحد الأدنى للثقة في الفتحة 4
-    slot4_leverage_mult: float = 2.0      # NEW: مضاعف الرافعة للفتحة 4
-
-    slot5_min_score: float = 88.0         # NEW: الحد الأدنى للسكور في الفتحة 5 (SNIPER)
-    slot5_min_confidence: float = 82.0    # NEW: الحد الأدنى للثقة في الفتحة 5
-    slot5_leverage_mult: float = 2.5      # NEW: مضاعف الرافعة للفتحة 5 (SNIPER)
-    slot5_min_modules: int = 7            # NEW: الحد الأدنى للموديولات المتفقة في الفتحة 5
-    max_leverage_cap: int = 75            # NEW: الحد الأقصى للرافعة عبر كل الفتحات
-    # ══════════════════════════════════════════════════════
+    slot3_min_score: float = 68.0
+    slot3_min_confidence: float = 60.0
+    slot3_leverage_mult: float = 1.5
+    slot4_min_score: float = 78.0
+    slot4_min_confidence: float = 70.0
+    slot4_leverage_mult: float = 2.0
+    slot5_min_score: float = 88.0
+    slot5_min_confidence: float = 82.0
+    slot5_leverage_mult: float = 2.5
+    slot5_min_modules: int = 7
+    max_leverage_cap: int = 75
     watchlist: Dict[str, str] = field(default_factory=lambda: {
         "btcusdt": "BTC/USDT:USDT", "ethusdt": "ETH/USDT:USDT", "solusdt": "SOL/USDT:USDT",
         "bnbusdt": "BNB/USDT:USDT", "xrpusdt": "XRP/USDT:USDT", "adausdt": "ADA/USDT:USDT",
         "linkusdt": "LINK/USDT:USDT", "avaxusdt": "AVAX/USDT:USDT", "dogeusdt": "DOGE/USDT:USDT",
         "wifusdt": "WIF/USDT:USDT", "1000pepeusdt": "1000PEPE/USDT:USDT", "suiusdt": "SUI/USDT:USDT",
         "aaveusdt": "AAVE/USDT:USDT", "nearusdt": "NEAR/USDT:USDT", "arbusdt": "ARB/USDT:USDT",
-        "aptusdt": "APT/USDT:USDT",
-        "opusdt": "OP/USDT:USDT",
-        "jupusdt": "JUP/USDT:USDT",
+        "aptusdt": "APT/USDT:USDT", "opusdt": "OP/USDT:USDT", "jupusdt": "JUP/USDT:USDT",
         "tiausdt": "TIA/USDT:USDT",
     })
-
     db_path: str = "apex_trades_v3.db"
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
@@ -603,59 +569,12 @@ class Config:
 
 
 CFG = Config()
-
-# MODIFIED: لا تستخدم مفاتيح API داخل الملف.
-# احذف أي مفاتيح قديمة موجودة في بداية Config وألغها من المنصات فوراً.
-CFG.binance_api_key = os.getenv("BINANCE_API_KEY", "").strip()
-CFG.binance_secret = os.getenv("BINANCE_SECRET", "").strip()
-CFG.nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
-
-# MODIFIED: الوضع التجريبي هو الافتراضي لأمان الحساب.
-CFG.dry_run = os.getenv("APEX_DRY_RUN", "true").lower() in (
-    "1", "true", "yes", "on"
-)
-
-# MODIFIED: خمس صفقات كحد أقصى.
+CFG.dry_run = os.getenv("APEX_DRY_RUN", "true").lower() in ("1", "true", "yes", "on")
 CFG.max_open_positions = 5
 
-# NEW: إذا لم يوجد مفتاح NVIDIA فلا نرسل طلبات AI.
 if not CFG.nvidia_api_key:
     CFG.use_ai_veto = False
     CFG.use_ai_explainer = False
-
-
-# NEW: إصلاح دالة EMA compression بحيث تعيد دائماً أربع قيم.
-def _ema_compression_score(closes, periods=(5, 8, 13, 21)):
-    if len(closes) < max(periods):
-        return 0.0, False, False, False
-
-    emas = {p: _ema(closes, p) for p in periods}
-    current = [emas[p][-1] for p in periods]
-    price = max(abs(closes[-1]), 1e-12)
-
-    spread = (max(current) - min(current)) / price * 100.0
-
-    previous = [emas[p][-5] for p in periods]
-    previous_price = max(abs(closes[-5]), 1e-12)
-    previous_spread = (
-        (max(previous) - min(previous)) / previous_price * 100.0
-    )
-
-    compressing = (
-        previous_spread > 0 and spread <= previous_spread * 0.65
-    )
-
-    breakout_up = all(
-        emas[periods[i]][-1] > emas[periods[i + 1]][-1]
-        for i in range(len(periods) - 1)
-    )
-
-    breakout_down = all(
-        emas[periods[i]][-1] < emas[periods[i + 1]][-1]
-        for i in range(len(periods) - 1)
-    )
-
-    return spread, compressing, breakout_up, breakout_down
 
 
 class Direction(Enum):
@@ -663,12 +582,10 @@ class Direction(Enum):
     SHORT = "SHORT"
     NEUTRAL = "NEUTRAL"
 
-
 class Decision(Enum):
     BUY = "BUY"
     SELL = "SELL"
     WAIT = "WAIT"
-
 
 class Regime(Enum):
     TRENDING_UP = "TRENDING_UP"
@@ -764,1408 +681,379 @@ class FinalDecision:
 
 
 class APEXEngine:
-    # MODIFIED: تمت إضافة AMF مع إبقاء الأوزان مجموعها قريباً من 1.
     BASE_WEIGHTS = {
-        "trend": 0.13,
-        "momentum": 0.11,
-        "volume": 0.09,
-        "structure": 0.09,
-        "candle": 0.06,
-        "deriv": 0.11,
-        "ichimoku": 0.06,
-        "sr_levels": 0.05,
-        "volatility": 0.04,
-        "iss_quantum": 0.10,
-        "amf": 0.16,
+        "trend": 0.13, "momentum": 0.11, "volume": 0.09, "structure": 0.09,
+        "candle": 0.06, "deriv": 0.11, "ichimoku": 0.06, "sr_levels": 0.05,
+        "volatility": 0.04, "iss_quantum": 0.10, "amf": 0.16,
     }
 
-    def analyze(
-        self,
-        data_primary,
-        data_trend=None,
-        data_fast=None,
-        symbol=None,
-        exchange_pub=None,
-    ):
+    def analyze(self, data_primary, data_trend=None, data_fast=None, symbol=None, exchange_pub=None):
         if not data_primary or len(data_primary) < 50:
             return None
-
         primary = OHLCV.from_raw(data_primary)
-
-        trend_d = (
-            OHLCV.from_raw(data_trend)
-            if data_trend and len(data_trend) >= 50
-            else None
-        )
-
-        fast_d = (
-            OHLCV.from_raw(data_fast)
-            if data_fast and len(data_fast) >= 30
-            else None
-        )
-
+        trend_d = OHLCV.from_raw(data_trend) if data_trend and len(data_trend) >= 50 else None
+        fast_d = OHLCV.from_raw(data_fast) if data_fast and len(data_fast) >= 30 else None
         out = APEXOutput()
         deriv_data = {}
-
         if symbol and exchange_pub:
             try:
                 deriv_data = {
-                    "oi": deriv.open_interest(symbol),
-                    "fund": deriv.funding(symbol),
-                    "lsr": deriv.long_short_ratio(symbol),
-                    "tf": deriv.taker_flow(symbol),
+                    "oi": deriv.open_interest(symbol), "fund": deriv.funding(symbol),
+                    "lsr": deriv.long_short_ratio(symbol), "tf": deriv.taker_flow(symbol),
                     "ob": deriv.orderbook(exchange_pub, symbol),
-                    "liq": deriv.liquidation_heatmap(
-                        symbol, primary.closes[-1]
-                    ),
+                    "liq": deriv.liquidation_heatmap(symbol, primary.closes[-1]),
                 }
             except Exception as exc:
                 logger.warning("Derivatives error %s: %s", symbol, exc)
                 deriv_data = {}
-
         signals = [
-            self._module_trend(primary, trend_d),
-            self._module_momentum(primary),
-            self._module_volume(primary),
-            self._module_structure(primary),
-            self._module_candle(primary),
-            self._module_deriv(primary, deriv_data),
-            self._module_ichimoku(primary),
-            self._module_sr_levels(primary),
-            self._module_volatility(primary),
-            self._module_ethereal_iss(primary),
+            self._module_trend(primary, trend_d), self._module_momentum(primary),
+            self._module_volume(primary), self._module_structure(primary),
+            self._module_candle(primary), self._module_deriv(primary, deriv_data),
+            self._module_ichimoku(primary), self._module_sr_levels(primary),
+            self._module_volatility(primary), self._module_ethereal_iss(primary),
             self._module_adaptive_momentum_fusion(primary),
         ]
-
         out.module_signals = signals
         out.total_modules = len(signals)
         out.regime = self._detect_regime(primary, deriv_data)
         weights = self._adaptive_weights(out.regime)
-
         weighted_score = 0.0
         total_weight = 0.0
         bull_count = 0
         bear_count = 0
-
         for signal in signals:
             weight = weights.get(signal.name, 0.0)
             effective_weight = weight * signal.confidence / 100.0
             weighted_score += signal.score * effective_weight
             total_weight += effective_weight
-
-            if signal.bull_signal:
-                bull_count += 1
-            elif signal.bear_signal:
-                bear_count += 1
-
-        out.composite_score = clamp(
-            safe_div(weighted_score, total_weight, 50.0)
-        )
+            if signal.bull_signal: bull_count += 1
+            elif signal.bear_signal: bear_count += 1
+        out.composite_score = clamp(safe_div(weighted_score, total_weight, 50.0))
         out.bull_modules = bull_count
         out.bear_modules = bear_count
-
         if trend_d is not None:
-            tf_score = self._multi_tf_alignment(
-                primary, trend_d, fast_d
-            )
-            out.composite_score = (
-                out.composite_score * 0.70 + tf_score * 0.30
-            )
-
+            tf_score = self._multi_tf_alignment(primary, trend_d, fast_d)
+            out.composite_score = out.composite_score * 0.70 + tf_score * 0.30
         out.rsi = _rsi(primary.closes)
-
-        atr_value = _atr(
-            primary.highs,
-            primary.lows,
-            primary.closes,
-        )
-
-        out.volatility_pct = safe_div(
-            atr_value, primary.closes[-1]
-        ) * 100.0
-
-        out.volume_spike = (
-            len(primary.volumes) >= 20
-            and primary.volumes[-1] > _mean(primary.volumes[-20:]) * 1.5
-        )
-
-        adx_value, plus_di, minus_di = _adx(
-            primary.highs,
-            primary.lows,
-            primary.closes,
-        )
+        atr_value = _atr(primary.highs, primary.lows, primary.closes)
+        out.volatility_pct = safe_div(atr_value, primary.closes[-1]) * 100.0
+        out.volume_spike = len(primary.volumes) >= 20 and primary.volumes[-1] > _mean(primary.volumes[-20:]) * 1.5
+        adx_value, plus_di, minus_di = _adx(primary.highs, primary.lows, primary.closes)
         out.trend_strength = adx_value
-
         self._refresh_direction(out)
-
         sl_multiplier = 1.5 if adx_value > 25.0 else 2.0
         tp_multiplier = 3.0 if adx_value > 30.0 else 2.5
         tp_multiplier = max(CFG.min_rr_ratio, tp_multiplier)
-
-        out.sl_percent = clamp(
-            out.volatility_pct * sl_multiplier,
-            0.5,
-            CFG.max_sl_percent,
-        )
-
-        out.tp_percent = clamp(
-            out.volatility_pct * tp_multiplier * sl_multiplier,
-            1.0,
-            CFG.max_tp_percent,
-        )
-
-        out.rr_ratio = safe_div(
-            out.tp_percent,
-            out.sl_percent,
-            2.0,
-        )
-
-        filter_reason = self._smart_filters(
-            primary, out, deriv_data
-        )
-
+        out.sl_percent = clamp(out.volatility_pct * sl_multiplier, 0.5, CFG.max_sl_percent)
+        out.tp_percent = clamp(out.volatility_pct * tp_multiplier * sl_multiplier, 1.0, CFG.max_tp_percent)
+        out.rr_ratio = safe_div(out.tp_percent, out.sl_percent, 2.0)
+        filter_reason = self._smart_filters(primary, out, deriv_data)
         if filter_reason:
             out.warnings.append("FILTER: " + filter_reason)
-            out.composite_score = (
-                out.composite_score - 50.0
-            ) * 0.50 + 50.0
+            out.composite_score = (out.composite_score - 50.0) * 0.50 + 50.0
             self._refresh_direction(out)
-
-        out.confidence = self._calc_confidence(
-            out, adx_value, deriv_data
-        )
-
-        bull_ok = (
-            out.composite_score >= CFG.min_signal_score
-            and out.bull_modules >= CFG.min_module_agreement
-            and out.confidence >= CFG.min_confidence
-            and out.direction == Direction.LONG
-        )
-
-        bear_ok = (
-            out.composite_score <= 100.0 - CFG.min_signal_score
-            and out.bear_modules >= CFG.min_module_agreement
-            and out.confidence >= CFG.min_confidence
-            and out.direction == Direction.SHORT
-        )
-
-        if bull_ok:
-            out.decision = Decision.BUY
-        elif bear_ok:
-            out.decision = Decision.SELL
-        else:
-            out.decision = Decision.WAIT
-
-        out.reasons = self._build_reasons(
-            out, signals, adx_value, plus_di, minus_di
-        )
-
+        out.confidence = self._calc_confidence(out, adx_value, deriv_data)
+        bull_ok = (out.composite_score >= CFG.min_signal_score and out.bull_modules >= CFG.min_module_agreement and out.confidence >= CFG.min_confidence and out.direction == Direction.LONG)
+        bear_ok = (out.composite_score <= 100.0 - CFG.min_signal_score and out.bear_modules >= CFG.min_module_agreement and out.confidence >= CFG.min_confidence and out.direction == Direction.SHORT)
+        if bull_ok: out.decision = Decision.BUY
+        elif bear_ok: out.decision = Decision.SELL
+        else: out.decision = Decision.WAIT
+        out.reasons = self._build_reasons(out, signals, adx_value, plus_di, minus_di)
         return out
 
     @staticmethod
     def _refresh_direction(out):
-        if out.composite_score > 55.0:
-            out.direction = Direction.LONG
-        elif out.composite_score < 45.0:
-            out.direction = Direction.SHORT
-        else:
-            out.direction = Direction.NEUTRAL
+        if out.composite_score > 55.0: out.direction = Direction.LONG
+        elif out.composite_score < 45.0: out.direction = Direction.SHORT
+        else: out.direction = Direction.NEUTRAL
 
     def _module_trend(self, data, trend_data=None):
-        closes = data.closes
-        price = closes[-1]
-
-        ema9 = _ema(closes, 9)[-1]
-        ema21 = _ema(closes, 21)[-1]
-        ema50 = _ema(closes, 50)[-1]
+        closes = data.closes; price = closes[-1]
+        ema9 = _ema(closes, 9)[-1]; ema21 = _ema(closes, 21)[-1]; ema50 = _ema(closes, 50)[-1]
         ema200 = _ema(closes, 200)[-1] if len(closes) >= 200 else ema50
-
-        bullish = price > ema9 > ema21 > ema50
-        bearish = price < ema9 < ema21 < ema50
-
-        bull_parts = sum([
-            price > ema9,
-            ema9 > ema21,
-            ema21 > ema50,
-        ])
-
-        bear_parts = sum([
-            price < ema9,
-            ema9 < ema21,
-            ema21 < ema50,
-        ])
-
+        bullish = price > ema9 > ema21 > ema50; bearish = price < ema9 < ema21 < ema50
+        bull_parts = sum([price > ema9, ema9 > ema21, ema21 > ema50])
+        bear_parts = sum([price < ema9, ema9 < ema21, ema21 < ema50])
         ema_score = 50.0 + (bull_parts - bear_parts) * 12.0
-
-        if bullish:
-            ema_score += 10.0
-        if bearish:
-            ema_score -= 10.0
-
+        if bullish: ema_score += 10.0
+        if bearish: ema_score -= 10.0
         macd_line, signal_line, histogram = _macd(closes)
-
-        if macd_line > signal_line and histogram > 0:
-            macd_score = 65.0
-        elif macd_line < signal_line and histogram < 0:
-            macd_score = 35.0
-        else:
-            macd_score = 50.0
-
+        if macd_line > signal_line and histogram > 0: macd_score = 65.0
+        elif macd_line < signal_line and histogram < 0: macd_score = 35.0
+        else: macd_score = 50.0
         htf_score = 50.0
-
         if trend_data is not None:
-            htf_price = trend_data.closes[-1]
-            htf_ema21 = _ema(trend_data.closes, 21)[-1]
-            htf_ema50 = _ema(trend_data.closes, 50)[-1]
-
-            if htf_price > htf_ema21 > htf_ema50:
-                htf_score = 70.0
-            elif htf_price < htf_ema21 < htf_ema50:
-                htf_score = 30.0
-
-        score = clamp(
-            ema_score * 0.50
-            + macd_score * 0.30
-            + htf_score * 0.20
-        )
-
+            htf_price = trend_data.closes[-1]; htf_ema21 = _ema(trend_data.closes, 21)[-1]; htf_ema50 = _ema(trend_data.closes, 50)[-1]
+            if htf_price > htf_ema21 > htf_ema50: htf_score = 70.0
+            elif htf_price < htf_ema21 < htf_ema50: htf_score = 30.0
+        score = clamp(ema_score * 0.50 + macd_score * 0.30 + htf_score * 0.20)
         confidence = 72.0 if bullish or bearish else 50.0
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="trend",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "ema9": ema9,
-                "ema21": ema21,
-                "ema50": ema50,
-                "ema200": ema200,
-                "macd": macd_line,
-                "signal": signal_line,
-                "hist": histogram,
-            },
-        )
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="trend", score=score, confidence=confidence, direction=direction, details={"ema9": ema9, "ema21": ema21, "ema50": ema50, "macd": macd_line, "signal": signal_line, "hist": histogram})
 
     def _module_momentum(self, data):
-        closes = data.closes
-        rsi = _rsi(closes)
-        stoch_k, stoch_d = _stochastic(
-            data.highs,
-            data.lows,
-            closes,
-        )
-
-        if rsi < 30:
-            rsi_score = 80.0
-        elif rsi > 70:
-            rsi_score = 20.0
-        elif rsi > 60:
-            rsi_score = 62.0
-        elif rsi < 40:
-            rsi_score = 38.0
-        else:
-            rsi_score = 50.0
-
-        if len(closes) >= 15:
-            rsi_score += (
-                _rsi(closes) - _rsi(closes[:-1])
-            ) * 0.5
-
-        if stoch_k < 20 and stoch_k > stoch_d:
-            stoch_score = 75.0
-        elif stoch_k > 80 and stoch_k < stoch_d:
-            stoch_score = 25.0
-        elif stoch_k > stoch_d:
-            stoch_score = 60.0
-        elif stoch_k < stoch_d:
-            stoch_score = 40.0
-        else:
-            stoch_score = 50.0
-
-        if len(closes) >= 11:
-            roc = safe_div(
-                closes[-1] - closes[-11],
-                closes[-11],
-            ) * 100.0
-            roc_score = clamp(50.0 + roc * 10.0)
-        else:
-            roc_score = 50.0
-
-        score = clamp(
-            rsi_score * 0.45
-            + stoch_score * 0.35
-            + roc_score * 0.20
-        )
-
-        confidence = (
-            70.0
-            if rsi < 30 or rsi > 70
-            else 60.0
-            if abs(rsi - 50.0) > 10
-            else 45.0
-        )
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="momentum",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "rsi": rsi,
-                "stoch_k": stoch_k,
-                "stoch_d": stoch_d,
-            },
-        )
+        closes = data.closes; rsi = _rsi(closes); stoch_k, stoch_d = _stochastic(data.highs, data.lows, closes)
+        if rsi < 30: rsi_score = 80.0
+        elif rsi > 70: rsi_score = 20.0
+        elif rsi > 60: rsi_score = 62.0
+        elif rsi < 40: rsi_score = 38.0
+        else: rsi_score = 50.0
+        if len(closes) >= 15: rsi_score += (_rsi(closes) - _rsi(closes[:-1])) * 0.5
+        if stoch_k < 20 and stoch_k > stoch_d: stoch_score = 75.0
+        elif stoch_k > 80 and stoch_k < stoch_d: stoch_score = 25.0
+        elif stoch_k > stoch_d: stoch_score = 60.0
+        elif stoch_k < stoch_d: stoch_score = 40.0
+        else: stoch_score = 50.0
+        if len(closes) >= 11: roc_score = clamp(50.0 + safe_div(closes[-1] - closes[-11], closes[-11]) * 100.0 * 10.0)
+        else: roc_score = 50.0
+        score = clamp(rsi_score * 0.45 + stoch_score * 0.35 + roc_score * 0.20)
+        confidence = 70.0 if rsi < 30 or rsi > 70 else 60.0 if abs(rsi - 50.0) > 10 else 45.0
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="momentum", score=score, confidence=confidence, direction=direction, details={"rsi": rsi, "stoch_k": stoch_k, "stoch_d": stoch_d})
 
     def _module_volume(self, data):
-        closes = data.closes
-        volumes = data.volumes
-
-        n = min(20, len(volumes))
-        volume_z = _zscore(volumes[-1], volumes[-n:]) if n >= 5 else 0.0
-
-        rising = sum(
-            1
-            for i in range(-5, 0)
-            if volumes[i] > volumes[i - 1]
-        ) >= 3
-
-        vwap_value = _vwap(
-            data.highs,
-            data.lows,
-            closes,
-            volumes,
-        )
-
-        price = closes[-1]
-        above_vwap = price > vwap_value
-
-        buy_volume = 0.0
-        sell_volume = 0.0
-
-        for i in range(max(1, len(closes) - 20), len(closes)):
-            if closes[i] >= closes[i - 1]:
-                buy_volume += volumes[i]
-            else:
-                sell_volume += volumes[i]
-
-        volume_bias = safe_div(
-            buy_volume - sell_volume,
-            buy_volume + sell_volume,
-        )
-
-        score = 50.0
-        score += volume_bias * 20.0
-        score += 10.0 if above_vwap else -10.0
-        score += 5.0 if rising else -5.0
-        score += clamp(volume_z * 2.0, -10.0, 10.0)
+        closes = data.closes; volumes = data.volumes
+        n = min(20, len(volumes)); volume_z = _zscore(volumes[-1], volumes[-n:]) if n >= 5 else 0.0
+        rising = sum(1 for i in range(-5, 0) if volumes[i] > volumes[i - 1]) >= 3
+        vwap_value = _vwap(data.highs, data.lows, closes, volumes)
+        price = closes[-1]; above_vwap = price > vwap_value
+        buy_volume = sum(volumes[i] for i in range(max(1, len(closes) - 20), len(closes)) if closes[i] >= closes[i - 1])
+        sell_volume = sum(volumes[i] for i in range(max(1, len(closes) - 20), len(closes)) if closes[i] < closes[i - 1])
+        volume_bias = safe_div(buy_volume - sell_volume, buy_volume + sell_volume)
+        score = 50.0 + volume_bias * 20.0 + (10.0 if above_vwap else -10.0) + (5.0 if rising else -5.0) + clamp(volume_z * 2.0, -10.0, 10.0)
         score = clamp(score)
-
-        confidence = clamp(
-            abs(volume_z) * 20.0 + 40.0,
-            30.0,
-            80.0,
-        )
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="volume",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "vwap": vwap_value,
-                "volume_z": volume_z,
-                "volume_bias": volume_bias,
-                "above_vwap": above_vwap,
-            },
-        )
+        confidence = clamp(abs(volume_z) * 20.0 + 40.0, 30.0, 80.0)
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="volume", score=score, confidence=confidence, direction=direction, details={"vwap": vwap_value, "volume_z": volume_z, "volume_bias": volume_bias, "above_vwap": above_vwap})
 
     def _module_structure(self, data):
         price = data.closes[-1]
-
-        if len(data.closes) < 20:
-            return ModuleSignal(
-                "structure", 50.0, 30.0, Direction.NEUTRAL
-            )
-
-        pivot = _pivot_points(
-            data.highs[-2],
-            data.lows[-2],
-            data.closes[-2],
-        )
-
-        supports = [pivot["s1"], pivot["s2"], pivot["s3"]]
-        resistances = [pivot["r1"], pivot["r2"], pivot["r3"]]
-
-        nearest_support = min(
-            abs(price - value) for value in supports
-        )
-        nearest_resistance = min(
-            abs(price - value) for value in resistances
-        )
-
-        near_support = nearest_support <= price * 0.01
-        near_resistance = nearest_resistance <= price * 0.01
-
-        n = min(20, len(data.closes))
-        higher_highs = 0
-        higher_lows = 0
-        lower_highs = 0
-        lower_lows = 0
-
+        if len(data.closes) < 20: return ModuleSignal("structure", 50.0, 30.0, Direction.NEUTRAL)
+        pivot = _pivot_points(data.highs[-2], data.lows[-2], data.closes[-2])
+        supports = [pivot["s1"], pivot["s2"], pivot["s3"]]; resistances = [pivot["r1"], pivot["r2"], pivot["r3"]]
+        near_support = min(abs(price - v) for v in supports) <= price * 0.01
+        near_resistance = min(abs(price - v) for v in resistances) <= price * 0.01
+        n = min(20, len(data.closes)); hh = hl = lh = ll = 0
         for i in range(-n + 1, 0):
-            if data.highs[i] > data.highs[i - 1]:
-                higher_highs += 1
-            if data.lows[i] > data.lows[i - 1]:
-                higher_lows += 1
-            if data.highs[i] < data.highs[i - 1]:
-                lower_highs += 1
-            if data.lows[i] < data.lows[i - 1]:
-                lower_lows += 1
-
-        bullish_structure = safe_div(
-            higher_highs + higher_lows,
-            n * 2,
-        )
-        bearish_structure = safe_div(
-            lower_highs + lower_lows,
-            n * 2,
-        )
-
-        score = 50.0 + (
-            bullish_structure - bearish_structure
-        ) * 50.0
-
-        if near_support:
-            score += 10.0
-        if near_resistance:
-            score -= 10.0
-
-        high20 = max(data.highs[-20:])
-        low20 = min(data.lows[-20:])
-        range20 = high20 - low20
-
-        if range20 > 0:
-            position = (price - low20) / range20
-            score += (position - 0.5) * 20.0
-
+            if data.highs[i] > data.highs[i - 1]: hh += 1
+            if data.lows[i] > data.lows[i - 1]: hl += 1
+            if data.highs[i] < data.highs[i - 1]: lh += 1
+            if data.lows[i] < data.lows[i - 1]: ll += 1
+        score = 50.0 + (safe_div(hh + hl, n * 2) - safe_div(lh + ll, n * 2)) * 50.0
+        if near_support: score += 10.0
+        if near_resistance: score -= 10.0
+        high20 = max(data.highs[-20:]); low20 = min(data.lows[-20:]); range20 = high20 - low20
+        if range20 > 0: score += ((price - low20) / range20 - 0.5) * 20.0
         score = clamp(score)
-        confidence = 60.0 if near_support or near_resistance else 45.0
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="structure",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "pp": pivot["pp"],
-                "r1": pivot["r1"],
-                "s1": pivot["s1"],
-                "near_support": near_support,
-                "near_resistance": near_resistance,
-            },
-        )
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="structure", score=score, confidence=60.0 if near_support or near_resistance else 45.0, direction=direction, details={"near_support": near_support, "near_resistance": near_resistance})
 
     def _module_candle(self, data):
-        patterns = _detect_candle_pattern(
-            data.opens,
-            data.highs,
-            data.lows,
-            data.closes,
-        )
-
-        _, _, _, percent_b, bandwidth = _bollinger(
-            data.closes
-        )
-
+        patterns = _detect_candle_pattern(data.opens, data.highs, data.lows, data.closes)
+        _, _, _, percent_b, bandwidth = _bollinger(data.closes)
         score = 50.0
-
-        if patterns.get("hammer") and percent_b < 0.30:
-            score += 20.0
-
-        if patterns.get("shooting_star") and percent_b > 0.70:
-            score -= 20.0
-
-        if patterns.get("bullish_engulfing"):
-            score += 18.0
-
-        if patterns.get("bearish_engulfing"):
-            score -= 18.0
-
-        if patterns.get("three_white_soldiers"):
-            score += 22.0
-
-        if patterns.get("three_black_crows"):
-            score -= 22.0
-
-        if percent_b < 0.10:
-            score += 8.0
-        elif percent_b > 0.90:
-            score -= 8.0
-
-        candle_range = max(
-            data.highs[-1] - data.lows[-1],
-            1e-12,
-        )
-
-        body_direction = (
-            data.closes[-1] - data.opens[-1]
-        ) / candle_range
-
-        score += body_direction * 10.0
+        if patterns.get("hammer") and percent_b < 0.30: score += 20.0
+        if patterns.get("shooting_star") and percent_b > 0.70: score -= 20.0
+        if patterns.get("bullish_engulfing"): score += 18.0
+        if patterns.get("bearish_engulfing"): score -= 18.0
+        if patterns.get("three_white_soldiers"): score += 22.0
+        if patterns.get("three_black_crows"): score -= 22.0
+        if percent_b < 0.10: score += 8.0
+        elif percent_b > 0.90: score -= 8.0
+        candle_range = max(data.highs[-1] - data.lows[-1], 1e-12)
+        score += (data.closes[-1] - data.opens[-1]) / candle_range * 10.0
         score = clamp(score)
-
-        has_pattern = any(
-            key in patterns
-            for key in (
-                "hammer",
-                "shooting_star",
-                "bullish_engulfing",
-                "bearish_engulfing",
-                "three_white_soldiers",
-                "three_black_crows",
-            )
-        )
-
-        confidence = 65.0 if has_pattern else 35.0
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="candle",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "percent_b": percent_b,
-                "bandwidth": bandwidth,
-                "patterns": list(patterns.keys()),
-            },
-        )
+        has_pattern = any(k in patterns for k in ("hammer", "shooting_star", "bullish_engulfing", "bearish_engulfing", "three_white_soldiers", "three_black_crows"))
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="candle", score=score, confidence=65.0 if has_pattern else 35.0, direction=direction, details={"percent_b": percent_b, "patterns": list(patterns.keys())})
 
     def _module_deriv(self, data, deriv_data):
-        if not deriv_data:
-            return ModuleSignal(
-                "deriv", 50.0, 20.0, Direction.NEUTRAL
-            )
-
-        oi = deriv_data.get("oi", {})
-        funding = deriv_data.get("fund", {})
-        lsr = deriv_data.get("lsr", {})
-        taker = deriv_data.get("tf", {})
-        orderbook = deriv_data.get("ob", {})
-
-        score = 50.0
-        confidence_factors = []
-
-        oi_change = oi.get("oi_change_1h", 0.0)
-        price_change = safe_div(
-            data.closes[-1] - data.closes[-2],
-            data.closes[-2],
-        )
-
-        if oi_change > 0.005 and price_change > 0:
-            score += 12.0
-            confidence_factors.append(15.0)
-        elif oi_change < -0.005 and price_change < 0:
-            score -= 12.0
-            confidence_factors.append(15.0)
-        elif oi_change > 0 and price_change < 0:
-            score -= 8.0
-        elif oi_change < 0 and price_change > 0:
-            score += 5.0
-
+        if not deriv_data: return ModuleSignal("deriv", 50.0, 20.0, Direction.NEUTRAL)
+        oi = deriv_data.get("oi", {}); funding = deriv_data.get("fund", {}); lsr = deriv_data.get("lsr", {})
+        taker = deriv_data.get("tf", {}); orderbook = deriv_data.get("ob", {})
+        score = 50.0; confidence_factors = []
+        oi_change = oi.get("oi_change_1h", 0.0); price_change = safe_div(data.closes[-1] - data.closes[-2], data.closes[-2])
+        if oi_change > 0.005 and price_change > 0: score += 12.0; confidence_factors.append(15.0)
+        elif oi_change < -0.005 and price_change < 0: score -= 12.0; confidence_factors.append(15.0)
+        elif oi_change > 0 and price_change < 0: score -= 8.0
+        elif oi_change < 0 and price_change > 0: score += 5.0
         score += oi.get("oi_trend", 0.0) * 10.0
-
         funding_rate = funding.get("rate", 0.0)
-        funding_extreme = funding.get("extreme", 0.0)
-
-        if funding_rate > 0.0005:
-            score -= 15.0 if funding_extreme else 8.0
-        elif funding_rate < -0.0003:
-            score += 15.0 if funding_extreme else 8.0
-
-        score += clamp(
-            lsr.get("smart_money_bias", 0.0) * 0.15,
-            -10.0,
-            10.0,
-        )
-
-        if lsr.get("retail_overcrowded_long"):
-            score -= 12.0
-            confidence_factors.append(20.0)
-
-        if lsr.get("retail_overcrowded_short"):
-            score += 12.0
-            confidence_factors.append(20.0)
-
-        score += taker.get("imbalance", 0.0) * 15.0
-        score += taker.get("momentum", 0.0) * 10.0
-        score += orderbook.get("imbalance", 0.0) * 8.0
-
-        if orderbook.get("spread_bps", 5.0) > 10.0:
-            score = (score - 50.0) * 0.70 + 50.0
-
+        if funding_rate > 0.0005: score -= 15.0 if funding.get("extreme") else 8.0
+        elif funding_rate < -0.0003: score += 15.0 if funding.get("extreme") else 8.0
+        score += clamp(lsr.get("smart_money_bias", 0.0) * 0.15, -10.0, 10.0)
+        if lsr.get("retail_overcrowded_long"): score -= 12.0; confidence_factors.append(20.0)
+        if lsr.get("retail_overcrowded_short"): score += 12.0; confidence_factors.append(20.0)
+        score += taker.get("imbalance", 0.0) * 15.0 + taker.get("momentum", 0.0) * 10.0 + orderbook.get("imbalance", 0.0) * 8.0
+        if orderbook.get("spread_bps", 5.0) > 10.0: score = (score - 50.0) * 0.70 + 50.0
         score = clamp(score)
-
-        confidence = (
-            _mean(confidence_factors) + 40.0
-            if confidence_factors
-            else 45.0
-        )
-        confidence = clamp(confidence, 0.0, 85.0)
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="deriv",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "oi_change": oi_change,
-                "funding": funding_rate,
-                "smart_bias": lsr.get("smart_money_bias", 0.0),
-                "taker_imbalance": taker.get("imbalance", 0.0),
-            },
-        )
+        confidence = clamp(_mean(confidence_factors) + 40.0 if confidence_factors else 45.0, 0.0, 85.0)
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="deriv", score=score, confidence=confidence, direction=direction, details={"oi_change": oi_change, "funding": funding_rate})
 
     def _module_ichimoku(self, data):
-        if len(data.closes) < 52:
-            return ModuleSignal(
-                "ichimoku", 50.0, 20.0, Direction.NEUTRAL
-            )
-
-        ichi = _ichimoku(
-            data.highs,
-            data.lows,
-            data.closes,
-        )
-
-        score = 50.0
-        score += ichi.get("above_cloud", 0) * 20.0
-        score += ichi.get("bullish_cloud", 0) * 10.0
-        score += ichi.get("tk_cross", 0) * 12.0
-
-        price = data.closes[-1]
-        kijun = ichi.get("kijun", price)
-
-        score += clamp(
-            safe_div(price - kijun, kijun) * 200.0,
-            -10.0,
-            10.0,
-        )
-
+        if len(data.closes) < 52: return ModuleSignal("ichimoku", 50.0, 20.0, Direction.NEUTRAL)
+        ichi = _ichimoku(data.highs, data.lows, data.closes)
+        score = 50.0 + ichi.get("above_cloud", 0) * 20.0 + ichi.get("bullish_cloud", 0) * 10.0 + ichi.get("tk_cross", 0) * 12.0
+        price = data.closes[-1]; kijun = ichi.get("kijun", price)
+        score += clamp(safe_div(price - kijun, kijun) * 200.0, -10.0, 10.0)
         score = clamp(score)
-
-        confidence = (
-            65.0
-            if ichi.get("above_cloud", 0) != 0
-            and ichi.get("tk_cross", 0) != 0
-            else 40.0
-        )
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="ichimoku",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details=ichi,
-        )
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="ichimoku", score=score, confidence=65.0 if ichi.get("above_cloud", 0) != 0 and ichi.get("tk_cross", 0) != 0 else 40.0, direction=direction, details=ichi)
 
     def _module_sr_levels(self, data):
-        if len(data.closes) < 30:
-            return ModuleSignal(
-                "sr_levels", 50.0, 25.0, Direction.NEUTRAL
-            )
-
-        price = data.closes[-1]
-        n = min(50, len(data.closes))
-        swing_highs = []
-        swing_lows = []
-
+        if len(data.closes) < 30: return ModuleSignal("sr_levels", 50.0, 25.0, Direction.NEUTRAL)
+        price = data.closes[-1]; n = min(50, len(data.closes)); swing_highs = []; swing_lows = []
         for i in range(2, n - 2):
             index = len(data.highs) - n + i
-
-            if (
-                data.highs[index] > data.highs[index - 1]
-                and data.highs[index] > data.highs[index + 1]
-            ):
-                swing_highs.append(data.highs[index])
-
-            if (
-                data.lows[index] < data.lows[index - 1]
-                and data.lows[index] < data.lows[index + 1]
-            ):
-                swing_lows.append(data.lows[index])
-
-        fib_position = 0.5
-        near_support = False
-        near_resistance = False
-
+            if data.highs[index] > data.highs[index - 1] and data.highs[index] > data.highs[index + 1]: swing_highs.append(data.highs[index])
+            if data.lows[index] < data.lows[index - 1] and data.lows[index] < data.lows[index + 1]: swing_lows.append(data.lows[index])
+        fib_position = 0.5; near_support = False; near_resistance = False
         if swing_highs and swing_lows:
-            recent_high = max(swing_highs[-3:])
-            recent_low = min(swing_lows[-3:])
-            fib_range = max(recent_high - recent_low, 1e-12)
-
-            fib_levels = [
-                recent_low + fib_range * 0.236,
-                recent_low + fib_range * 0.382,
-                recent_low + fib_range * 0.500,
-                recent_low + fib_range * 0.618,
-                recent_low + fib_range * 0.786,
-            ]
-
+            recent_high = max(swing_highs[-3:]); recent_low = min(swing_lows[-3:]); fib_range = max(recent_high - recent_low, 1e-12)
+            fib_levels = [recent_low + fib_range * f for f in (0.236, 0.382, 0.500, 0.618, 0.786)]
             tolerance = price * 0.005
-            fib_position = clamp(
-                safe_div(price - recent_low, fib_range),
-                0.0,
-                1.0,
-            )
-
-            near_support = any(
-                abs(price - level) < tolerance
-                and price >= level - tolerance
-                for level in fib_levels
-            )
-
-            near_resistance = any(
-                abs(price - level) < tolerance
-                and price <= level + tolerance
-                for level in fib_levels
-            )
-
+            fib_position = clamp(safe_div(price - recent_low, fib_range), 0.0, 1.0)
+            near_support = any(abs(price - lv) < tolerance and price >= lv - tolerance for lv in fib_levels)
+            near_resistance = any(abs(price - lv) < tolerance and price <= lv + tolerance for lv in fib_levels)
         score = 50.0 + (fib_position - 0.5) * 30.0
-
-        if near_support:
-            score += 15.0
-        if near_resistance:
-            score -= 15.0
-
-        for level in swing_lows[-5:]:
-            if abs(price - level) < price * 0.015:
-                score += 8.0
-
-        for level in swing_highs[-5:]:
-            if abs(price - level) < price * 0.015:
-                score -= 8.0
-
+        if near_support: score += 15.0
+        if near_resistance: score -= 15.0
         score = clamp(score)
-        confidence = 60.0 if near_support or near_resistance else 40.0
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="sr_levels",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "fib_position": fib_position,
-                "near_support": near_support,
-                "near_resistance": near_resistance,
-            },
-        )
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="sr_levels", score=score, confidence=60.0 if near_support or near_resistance else 40.0, direction=direction, details={"fib_position": fib_position})
 
     def _module_volatility(self, data):
-        atr_value = _atr(
-            data.highs,
-            data.lows,
-            data.closes,
-        )
-
-        atr_pct = safe_div(
-            atr_value,
-            data.closes[-1],
-        ) * 100.0
-
+        atr_value = _atr(data.highs, data.lows, data.closes); atr_pct = safe_div(atr_value, data.closes[-1]) * 100.0
         _, _, _, percent_b, bandwidth = _bollinger(data.closes)
-
-        if atr_pct < 0.3:
-            score = 55.0
-            regime = "COMPRESSED"
-            confidence = 50.0
-        elif atr_pct > 3.0:
-            score = 50.0
-            regime = "EXPLOSIVE"
-            confidence = 35.0
-        else:
-            score = 50.0 + (percent_b - 0.5) * 20.0
-            regime = "NORMAL"
-            confidence = 55.0
-
-        if bandwidth < 3.0:
-            score = (score - 50.0) * 0.5 + 50.0
-            confidence = max(confidence - 10.0, 20.0)
-
+        if atr_pct < 0.3: score = 55.0; confidence = 50.0
+        elif atr_pct > 3.0: score = 50.0; confidence = 35.0
+        else: score = 50.0 + (percent_b - 0.5) * 20.0; confidence = 55.0
+        if bandwidth < 3.0: score = (score - 50.0) * 0.5 + 50.0; confidence = max(confidence - 10.0, 20.0)
         score = clamp(score)
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="volatility",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "atr_pct": atr_pct,
-                "bandwidth": bandwidth,
-                "percent_b": percent_b,
-                "volatility_regime": regime,
-            },
-        )
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="volatility", score=score, confidence=confidence, direction=direction, details={"atr_pct": atr_pct, "bandwidth": bandwidth})
 
     def _module_ethereal_iss(self, data):
         closes = data.closes
+        if len(closes) < 30: return ModuleSignal("iss_quantum", 50.0, 10.0, Direction.NEUTRAL)
+        changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        entropy_val = _entropy_manual(changes); std_dev = _std(closes[-14:]); singularity = entropy_val / (std_dev + 1e-10)
+        recent_flux = _gradient_manual(closes[-5:]); bias = _mean(recent_flux)
+        score = clamp(50.0 + safe_div(bias, closes[-1] * 0.001) * 10.0)
+        confidence = clamp(singularity * 20.0, 30.0, 98.0)
+        direction = Direction.LONG if score > 55 else Direction.SHORT if score < 45 else Direction.NEUTRAL
+        return ModuleSignal(name="iss_quantum", score=score, confidence=confidence, direction=direction, details={"entropy": entropy_val, "singularity": singularity})
 
-        if len(closes) < 30:
-            return ModuleSignal(
-                "iss_quantum", 50.0, 10.0, Direction.NEUTRAL
-            )
-
-        changes = [
-            closes[i] - closes[i - 1]
-            for i in range(1, len(closes))
-        ]
-
-        entropy = _entropy_manual(changes)
-        standard_deviation = _std(closes[-14:])
-        singularity = entropy / (standard_deviation + 1e-10)
-
-        recent_flux = _gradient_manual(closes[-5:])
-        bias = _mean(recent_flux)
-
-        score = 50.0 + safe_div(
-            bias,
-            closes[-1] * 0.001,
-        ) * 10.0
-
-        score = clamp(score)
-        confidence = clamp(
-            singularity * 20.0,
-            30.0,
-            98.0,
-        )
-
-        direction = (
-            Direction.LONG
-            if score > 55
-            else Direction.SHORT
-            if score < 45
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="iss_quantum",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "entropy": entropy,
-                "singularity": singularity,
-            },
-        )
-
-    # NEW: خوارزمية AMF تجمع الاتجاه والزخم والحجم وCVD والـ FVG.
     def _module_adaptive_momentum_fusion(self, data):
-        closes = data.closes
-        highs = data.highs
-        lows = data.lows
-        volumes = data.volumes
-
-        if len(closes) < 60:
-            return ModuleSignal(
-                "amf", 50.0, 20.0, Direction.NEUTRAL
-            )
-
-        ema9 = _ema(closes, 9)[-1]
-        ema21 = _ema(closes, 21)[-1]
-        ema55 = _ema(closes, 55)[-1]
-
-        trend_component = 0.0
-
-        if ema9 > ema21 > ema55:
-            trend_component = 1.0
-        elif ema9 < ema21 < ema55:
-            trend_component = -1.0
-        else:
-            trend_component = safe_div(
-                ema9 - ema55,
-                abs(ema55) * 0.01,
-            )
-            trend_component = clamp(
-                trend_component,
-                -1.0,
-                1.0,
-            )
-
-        atr_value = _atr(highs, lows, closes)
-        _, _, macd_hist = _macd(closes)
-
-        macd_component = math.tanh(
-            safe_div(macd_hist, atr_value) * 2.0
-        )
-
-        rsi_value = _rsi(closes)
-        rsi_component = clamp(
-            (rsi_value - 50.0) / 25.0,
-            -1.0,
-            1.0,
-        )
-
-        volume_z = _zscore(
-            volumes[-1],
-            volumes[-20:],
-        )
-
-        price_volume_component = clamp(
-            volume_z / 3.0,
-            -1.0,
-            1.0,
-        )
-
-        cvd_values = _calc_cvd(
-            closes,
-            volumes,
-            lookback=20,
-        )
-
-        cvd_component = 0.0
-        if len(cvd_values) >= 10:
-            cvd_component = math.tanh(
-                safe_div(
-                    cvd_values[-1] - cvd_values[-10],
-                    _mean(volumes[-20:]) * 10.0,
-                )
-            )
-
-        ha_o, _, _, ha_c = _heikin_ashi(
-            data.opens,
-            data.highs,
-            data.lows,
-            data.closes,
-        )
-
-        ha_bull = sum(
-            1
-            for i in range(-3, 0)
-            if ha_c[i] > ha_o[i]
-        )
-
-        ha_component = (ha_bull - 1.5) / 1.5
-        ha_component = clamp(ha_component, -1.0, 1.0)
-
-        bull_fvg, bear_fvg = _detect_fvg(
-            highs,
-            lows,
-            lookback=12,
-        )
-
-        fvg_component = 0.0
-        current_price = closes[-1]
-
-        if bull_fvg:
-            low_edge = bull_fvg[-1][0]
-            high_edge = bull_fvg[-1][1]
-            if low_edge <= current_price <= high_edge * 1.01:
-                fvg_component += 0.50
-
-        if bear_fvg:
-            low_edge = bear_fvg[-1][1]
-            high_edge = bear_fvg[-1][0]
-            if low_edge * 0.99 <= current_price <= high_edge:
-                fvg_component -= 0.50
-
-        spread, compressing, breakout_up, breakout_down = (
-            _ema_compression_score(closes)
-        )
-
+        closes = data.closes; highs = data.highs; lows = data.lows; volumes = data.volumes
+        if len(closes) < 60: return ModuleSignal("amf", 50.0, 20.0, Direction.NEUTRAL)
+        ema9 = _ema(closes, 9)[-1]; ema21 = _ema(closes, 21)[-1]; ema55 = _ema(closes, 55)[-1]
+        if ema9 > ema21 > ema55: trend_component = 1.0
+        elif ema9 < ema21 < ema55: trend_component = -1.0
+        else: trend_component = clamp(safe_div(ema9 - ema55, abs(ema55) * 0.01), -1.0, 1.0)
+        atr_value = _atr(highs, lows, closes); _, _, macd_hist = _macd(closes)
+        macd_component = math.tanh(safe_div(macd_hist, atr_value) * 2.0)
+        rsi_value = _rsi(closes); rsi_component = clamp((rsi_value - 50.0) / 25.0, -1.0, 1.0)
+        volume_z = _zscore(volumes[-1], volumes[-20:]); price_volume_component = clamp(volume_z / 3.0, -1.0, 1.0)
+        cvd_values = _calc_cvd(closes, volumes, lookback=20)
+        cvd_component = math.tanh(safe_div(cvd_values[-1] - cvd_values[-10], _mean(volumes[-20:]) * 10.0)) if len(cvd_values) >= 10 else 0.0
+        ha_o, _, _, ha_c = _heikin_ashi(data.opens, data.highs, data.lows, data.closes)
+        ha_bull = sum(1 for i in range(-3, 0) if ha_c[i] > ha_o[i])
+        ha_component = clamp((ha_bull - 1.5) / 1.5, -1.0, 1.0)
+        bull_fvg, bear_fvg = _detect_fvg(highs, lows, lookback=12)
+        fvg_component = 0.0; current_price = closes[-1]
+        if bull_fvg and bull_fvg[-1][0] <= current_price <= bull_fvg[-1][1] * 1.01: fvg_component += 0.50
+        if bear_fvg and bear_fvg[-1][1] * 0.99 <= current_price <= bear_fvg[-1][0]: fvg_component -= 0.50
+        spread, compressing, breakout_up, breakout_down = _ema_compression_score(closes)
         breakout_component = 0.0
-
-        if breakout_up:
-            breakout_component += 0.60
-        elif breakout_down:
-            breakout_component -= 0.60
-
-        if compressing:
-            breakout_component *= 0.50
-
-        raw = (
-            trend_component * 0.30
-            + macd_component * 0.18
-            + rsi_component * 0.12
-            + price_volume_component * 0.12
-            + cvd_component * 0.12
-            + ha_component * 0.08
-            + fvg_component * 0.04
-            + breakout_component * 0.04
-        )
-
+        if breakout_up: breakout_component += 0.60
+        elif breakout_down: breakout_component -= 0.60
+        if compressing: breakout_component *= 0.50
+        raw = (trend_component * 0.30 + macd_component * 0.18 + rsi_component * 0.12 + price_volume_component * 0.12 + cvd_component * 0.12 + ha_component * 0.08 + fvg_component * 0.04 + breakout_component * 0.04)
         score = clamp(50.0 + raw * 35.0)
-
-        directional_parts = [
-            trend_component,
-            macd_component,
-            rsi_component,
-            cvd_component,
-            ha_component,
-        ]
-
-        positive = sum(value > 0.15 for value in directional_parts)
-        negative = sum(value < -0.15 for value in directional_parts)
+        directional_parts = [trend_component, macd_component, rsi_component, cvd_component, ha_component]
+        positive = sum(v > 0.15 for v in directional_parts); negative = sum(v < -0.15 for v in directional_parts)
         agreement = max(positive, negative) / len(directional_parts)
-
-        confidence = clamp(
-            35.0
-            + agreement * 45.0
-            + min(abs(raw) * 20.0, 18.0),
-            25.0,
-            95.0,
-        )
-
-        direction = (
-            Direction.LONG
-            if score > 55.0
-            else Direction.SHORT
-            if score < 45.0
-            else Direction.NEUTRAL
-        )
-
-        return ModuleSignal(
-            name="amf",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={
-                "trend_component": trend_component,
-                "macd_component": macd_component,
-                "rsi": rsi_value,
-                "volume_z": volume_z,
-                "cvd_component": cvd_component,
-                "ema_spread": spread,
-                "compressing": compressing,
-                "breakout_up": breakout_up,
-                "breakout_down": breakout_down,
-            },
-        )
+        confidence = clamp(35.0 + agreement * 45.0 + min(abs(raw) * 20.0, 18.0), 25.0, 95.0)
+        direction = Direction.LONG if score > 55.0 else Direction.SHORT if score < 45.0 else Direction.NEUTRAL
+        return ModuleSignal(name="amf", score=score, confidence=confidence, direction=direction, details={"trend_component": trend_component, "macd_component": macd_component, "cvd_component": cvd_component, "compressing": compressing})
 
     def _detect_regime(self, data, deriv_data):
-        adx_value, plus_di, minus_di = _adx(
-            data.highs,
-            data.lows,
-            data.closes,
-        )
-
+        adx_value, plus_di, minus_di = _adx(data.highs, data.lows, data.closes)
         _, _, _, _, bandwidth = _bollinger(data.closes)
-
-        atr_value = _atr(
-            data.highs,
-            data.lows,
-            data.closes,
-        )
-
-        atr_pct = safe_div(
-            atr_value,
-            data.closes[-1],
-        ) * 100.0
-
-        if adx_value > 25 and plus_di > minus_di:
-            return Regime.TRENDING_UP
-
-        if adx_value > 25 and minus_di > plus_di:
-            return Regime.TRENDING_DOWN
-
+        atr_value = _atr(data.highs, data.lows, data.closes); atr_pct = safe_div(atr_value, data.closes[-1]) * 100.0
+        if adx_value > 25 and plus_di > minus_di: return Regime.TRENDING_UP
+        if adx_value > 25 and minus_di > plus_di: return Regime.TRENDING_DOWN
         if bandwidth > 8 and atr_pct > 1.5:
-            ema_fast = _ema(data.closes, 9)[-1]
-            ema_slow = _ema(data.closes, 21)[-1]
-            return (
-                Regime.BREAKOUT_UP
-                if ema_fast > ema_slow
-                else Regime.BREAKOUT_DOWN
-            )
-
+            return Regime.BREAKOUT_UP if _ema(data.closes, 9)[-1] > _ema(data.closes, 21)[-1] else Regime.BREAKOUT_DOWN
         rsi_value = _rsi(data.closes)
-
-        if rsi_value < 28:
-            return Regime.REVERSAL_UP
-
-        if rsi_value > 72:
-            return Regime.REVERSAL_DOWN
-
-        if atr_pct > 2.5:
-            return Regime.HIGH_VOLATILITY
-
-        oi_change = deriv_data.get(
-            "oi", {}
-        ).get("oi_change_1h", 0.0)
-
-        if bandwidth < 4.0 and abs(oi_change) < 0.01:
-            return Regime.ACCUMULATION
-
+        if rsi_value < 28: return Regime.REVERSAL_UP
+        if rsi_value > 72: return Regime.REVERSAL_DOWN
+        if atr_pct > 2.5: return Regime.HIGH_VOLATILITY
+        oi_change = deriv_data.get("oi", {}).get("oi_change_1h", 0.0)
+        if bandwidth < 4.0 and abs(oi_change) < 0.01: return Regime.ACCUMULATION
         return Regime.RANGING
 
     def _adaptive_weights(self, regime):
         weights = dict(self.BASE_WEIGHTS)
-
-        if regime in (
-            Regime.TRENDING_UP,
-            Regime.TRENDING_DOWN,
-        ):
-            weights["trend"] += 0.05
-            weights["ichimoku"] += 0.03
-            weights["amf"] += 0.03
-            weights["sr_levels"] -= 0.03
-
-        elif regime in (
-            Regime.BREAKOUT_UP,
-            Regime.BREAKOUT_DOWN,
-        ):
-            weights["volume"] += 0.05
-            weights["deriv"] += 0.03
-            weights["amf"] += 0.04
-            weights["sr_levels"] -= 0.02
-
-        elif regime in (
-            Regime.REVERSAL_UP,
-            Regime.REVERSAL_DOWN,
-        ):
-            weights["momentum"] += 0.04
-            weights["candle"] += 0.03
-            weights["sr_levels"] += 0.03
-            weights["trend"] -= 0.04
-
+        if regime in (Regime.TRENDING_UP, Regime.TRENDING_DOWN):
+            weights["trend"] += 0.05; weights["amf"] += 0.03; weights["sr_levels"] -= 0.03
+        elif regime in (Regime.BREAKOUT_UP, Regime.BREAKOUT_DOWN):
+            weights["volume"] += 0.05; weights["amf"] += 0.04; weights["sr_levels"] -= 0.02
+        elif regime in (Regime.REVERSAL_UP, Regime.REVERSAL_DOWN):
+            weights["momentum"] += 0.04; weights["candle"] += 0.03; weights["trend"] -= 0.04
         elif regime == Regime.HIGH_VOLATILITY:
-            weights["deriv"] += 0.05
-            weights["amf"] += 0.04
-            weights["trend"] -= 0.03
-            weights["volatility"] -= 0.02
-
-        for key in list(weights):
-            weights[key] = max(weights[key], 0.01)
-
+            weights["deriv"] += 0.05; weights["amf"] += 0.04; weights["trend"] -= 0.03
+        for key in list(weights): weights[key] = max(weights[key], 0.01)
         total = sum(weights.values())
-        return {
-            key: value / total
-            for key, value in weights.items()
-        }
+        return {key: value / total for key, value in weights.items()}
 
     def _multi_tf_alignment(self, primary, trend_data, fast_data=None):
-        trend_price = trend_data.closes[-1]
-        trend_ema21 = _ema(trend_data.closes, 21)[-1]
-        trend_ema50 = _ema(trend_data.closes, 50)[-1]
-        trend_rsi = _rsi(trend_data.closes)
-
-        trend_score = 50.0
-
-        if trend_price > trend_ema21 > trend_ema50:
-            trend_score = 70.0
-        elif trend_price < trend_ema21 < trend_ema50:
-            trend_score = 30.0
-
-        if trend_rsi > 60:
-            trend_score += 5.0
-        elif trend_rsi < 40:
-            trend_score -= 5.0
-
+        trend_price = trend_data.closes[-1]; trend_ema21 = _ema(trend_data.closes, 21)[-1]; trend_ema50 = _ema(trend_data.closes, 50)[-1]
+        trend_rsi = _rsi(trend_data.closes); trend_score = 50.0
+        if trend_price > trend_ema21 > trend_ema50: trend_score = 70.0
+        elif trend_price < trend_ema21 < trend_ema50: trend_score = 30.0
+        if trend_rsi > 60: trend_score += 5.0
+        elif trend_rsi < 40: trend_score -= 5.0
         fast_score = 50.0
-
         if fast_data and len(fast_data.closes) >= 21:
-            fast_ema9 = _ema(fast_data.closes, 9)[-1]
-            fast_ema21 = _ema(fast_data.closes, 21)[-1]
-
-            if fast_ema9 > fast_ema21:
-                fast_score = 65.0
-            elif fast_ema9 < fast_ema21:
-                fast_score = 35.0
-
-        return clamp(
-            trend_score * 0.65 + fast_score * 0.35
-        )
+            if _ema(fast_data.closes, 9)[-1] > _ema(fast_data.closes, 21)[-1]: fast_score = 65.0
+            else: fast_score = 35.0
+        return clamp(trend_score * 0.65 + fast_score * 0.35)
 
     def _smart_filters(self, data, output, deriv_data):
-        orderbook = deriv_data.get("ob", {})
-        funding = deriv_data.get("fund", {})
-
-        if orderbook.get("spread_bps", 0.0) > 15.0:
-            return "spread is too wide"
-
-        funding_rate = funding.get("rate", 0.0)
-        funding_extreme = funding.get("extreme", 0.0)
-
-        if (
-            funding_extreme
-            and output.direction == Direction.LONG
-            and funding_rate > 0.002
-        ):
-            return "positive funding is extreme"
-
-        if (
-            funding_extreme
-            and output.direction == Direction.SHORT
-            and funding_rate < -0.001
-        ):
-            return "negative funding may cause short squeeze"
-
+        orderbook = deriv_data.get("ob", {}); funding = deriv_data.get("fund", {})
+        if orderbook.get("spread_bps", 0.0) > 15.0: return "spread is too wide"
+        if funding.get("extreme") and output.direction == Direction.LONG and funding.get("rate", 0.0) > 0.002: return "positive funding is extreme"
+        if funding.get("extreme") and output.direction == Direction.SHORT and funding.get("rate", 0.0) < -0.001: return "negative funding may cause short squeeze"
         rsi_now = _rsi(data.closes)
-
         if len(data.closes) >= 20:
             rsi_previous = _rsi(data.closes[:-1])
-
-            if (
-                data.closes[-1] >= max(data.closes[-20:-1])
-                and rsi_now < rsi_previous
-            ):
-                return "possible bearish RSI divergence"
-
-            if (
-                data.closes[-1] <= min(data.closes[-20:-1])
-                and rsi_now > rsi_previous
-            ):
-                return "possible bullish RSI divergence"
-
+            if data.closes[-1] >= max(data.closes[-20:-1]) and rsi_now < rsi_previous: return "possible bearish RSI divergence"
+            if data.closes[-1] <= min(data.closes[-20:-1]) and rsi_now > rsi_previous: return "possible bullish RSI divergence"
         return None
 
     def _calc_confidence(self, output, adx_value, deriv_data):
         active = output.bull_modules + output.bear_modules
-
-        if active <= 0:
-            agreement = 0.0
-        else:
-            agreement = max(
-                output.bull_modules,
-                output.bear_modules,
-            ) / active
-
+        agreement = max(output.bull_modules, output.bear_modules) / active if active > 0 else 0.0
         confidence = agreement * 70.0
-
-        if adx_value > 30:
-            confidence += 15.0
-        elif adx_value > 20:
-            confidence += 8.0
-
-        oi_change = deriv_data.get(
-            "oi", {}
-        ).get("oi_change_1h", 0.0)
-
-        if abs(oi_change) > 0.005:
-            confidence += 8.0
-
-        confidence += (
-            abs(output.composite_score - 50.0) / 50.0
-        ) * 15.0
-
+        if adx_value > 30: confidence += 15.0
+        elif adx_value > 20: confidence += 8.0
+        oi_change = deriv_data.get("oi", {}).get("oi_change_1h", 0.0)
+        if abs(oi_change) > 0.005: confidence += 8.0
+        confidence += (abs(output.composite_score - 50.0) / 50.0) * 15.0
         return clamp(confidence, 0.0, 95.0)
 
-    def _build_reasons(
-        self,
-        output,
-        signals,
-        adx_value,
-        plus_di,
-        minus_di,
-    ):
-        reasons = [
-            (
-                f"Regime={output.regime.value} "
-                f"Direction={output.direction.value} "
-                f"Score={output.composite_score:.1f}"
-            ),
-            (
-                f"Modules: Bull={output.bull_modules}/"
-                f"{output.total_modules} "
-                f"Bear={output.bear_modules}/"
-                f"{output.total_modules}"
-            ),
-            (
-                f"ADX={adx_value:.1f} "
-                f"+DI={plus_di:.1f} "
-                f"-DI={minus_di:.1f} "
-                f"RSI={output.rsi:.1f}"
-            ),
-            (
-                f"Volatility={output.volatility_pct:.2f}% "
-                f"VolumeSpike={output.volume_spike}"
-            ),
-        ]
-
+    def _build_reasons(self, output, signals, adx_value, plus_di, minus_di):
+        reasons = [f"Regime={output.regime.value} Dir={output.direction.value} Score={output.composite_score:.1f}",
+                   f"Modules: Bull={output.bull_modules}/{output.total_modules} Bear={output.bear_modules}/{output.total_modules}",
+                   f"ADX={adx_value:.1f} +DI={plus_di:.1f} -DI={minus_di:.1f} RSI={output.rsi:.1f}",
+                   f"Volatility={output.volatility_pct:.2f}% VolumeSpike={output.volume_spike}"]
         for signal in signals:
-            marker = (
-                "BULL"
-                if signal.bull_signal
-                else "BEAR"
-                if signal.bear_signal
-                else "NEUTRAL"
-            )
-
-            reasons.append(
-                f"{marker} [{signal.name}] "
-                f"Score={signal.score:.1f} "
-                f"Conf={signal.confidence:.1f}%"
-            )
-
+            marker = "BULL" if signal.bull_signal else "BEAR" if signal.bear_signal else "NEUTRAL"
+            reasons.append(f"{marker} [{signal.name}] Score={signal.score:.1f} Conf={signal.confidence:.1f}%")
         return reasons
 
 
@@ -2175,677 +1063,174 @@ apex_engine = APEXEngine()
 
 class TradeDB:
     def __init__(self, path):
-        self.conn = sqlite3.connect(
-            path,
-            check_same_thread=False,
-        )
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.lock = threading.Lock()
         self._init_tables()
 
     def _init_tables(self):
         with self.lock:
-            self.conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS trades (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    side TEXT,
-                    mode TEXT,
-                    entry_price REAL,
-                    quantity REAL,
-                    sl_price REAL,
-                    tp_price REAL,
-                    sl_order_id TEXT DEFAULT '',
-                    tp_order_id TEXT DEFAULT '',
-                    entry_order_id TEXT DEFAULT '',
-                    confidence REAL,
-                    entry_quality REAL,
-                    risk_score REAL,
-                    regime TEXT,
-                    reason TEXT,
-                    timestamp TEXT,
-                    status TEXT DEFAULT 'OPEN',
-                    exit_price REAL,
-                    realized_pnl REAL,
-                    pnl_percent REAL,
-                    commission REAL DEFAULT 0,
-                    closed_at TEXT,
-                    close_reason TEXT,
-                    ai_explanation TEXT,
-                    tf_alignment INTEGER,
-                    final_score REAL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_status
-                ON trades(status);
-
-                CREATE INDEX IF NOT EXISTS idx_symbol
-                ON trades(symbol);
-
-                CREATE INDEX IF NOT EXISTS idx_timestamp
-                ON trades(timestamp);
-                """
-            )
+            self.conn.executescript("""CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, side TEXT, mode TEXT, entry_price REAL, quantity REAL, sl_price REAL, tp_price REAL, sl_order_id TEXT DEFAULT '', tp_order_id TEXT DEFAULT '', entry_order_id TEXT DEFAULT '', confidence REAL, entry_quality REAL, risk_score REAL, regime TEXT, reason TEXT, timestamp TEXT, status TEXT DEFAULT 'OPEN', exit_price REAL, realized_pnl REAL, pnl_percent REAL, commission REAL DEFAULT 0, closed_at TEXT, close_reason TEXT, ai_explanation TEXT, tf_alignment INTEGER, final_score REAL); CREATE INDEX IF NOT EXISTS idx_status ON trades(status); CREATE INDEX IF NOT EXISTS idx_symbol ON trades(symbol); CREATE INDEX IF NOT EXISTS idx_timestamp ON trades(timestamp);""")
             self.conn.commit()
 
     def insert_trade(self, **kwargs):
         with self.lock:
-            cursor = self.conn.execute(
-                """
-                INSERT INTO trades (
-                    symbol,
-                    side,
-                    mode,
-                    entry_price,
-                    quantity,
-                    sl_price,
-                    tp_price,
-                    sl_order_id,
-                    tp_order_id,
-                    entry_order_id,
-                    confidence,
-                    entry_quality,
-                    risk_score,
-                    regime,
-                    reason,
-                    timestamp,
-                    status,
-                    ai_explanation,
-                    tf_alignment,
-                    final_score
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    kwargs.get("symbol", ""),
-                    kwargs.get("side", ""),
-                    kwargs.get("mode", ""),
-                    kwargs.get("entry_price", 0.0),
-                    kwargs.get("quantity", 0.0),
-                    kwargs.get("sl_price", 0.0),
-                    kwargs.get("tp_price", 0.0),
-                    kwargs.get("sl_order_id", ""),
-                    kwargs.get("tp_order_id", ""),
-                    kwargs.get("entry_order_id", ""),
-                    kwargs.get("confidence", 0.0),
-                    kwargs.get("entry_quality", 0.0),
-                    kwargs.get("risk_score", 50.0),
-                    kwargs.get("regime", ""),
-                    kwargs.get("reason", ""),
-                    kwargs.get(
-                        "timestamp",
-                        datetime.now(timezone.utc).isoformat(),
-                    ),
-                    kwargs.get("status", "OPEN"),
-                    kwargs.get("ai_explanation", ""),
-                    kwargs.get("tf_alignment", 0),
-                    kwargs.get("final_score", 0.0),
-                ),
-            )
-
+            cursor = self.conn.execute("INSERT INTO trades (symbol, side, mode, entry_price, quantity, sl_price, tp_price, sl_order_id, tp_order_id, entry_order_id, confidence, entry_quality, risk_score, regime, reason, timestamp, status, ai_explanation, tf_alignment, final_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (kwargs.get("symbol", ""), kwargs.get("side", ""), kwargs.get("mode", ""), kwargs.get("entry_price", 0.0), kwargs.get("quantity", 0.0), kwargs.get("sl_price", 0.0), kwargs.get("tp_price", 0.0), kwargs.get("sl_order_id", ""), kwargs.get("tp_order_id", ""), kwargs.get("entry_order_id", ""), kwargs.get("confidence", 0.0), kwargs.get("entry_quality", 0.0), kwargs.get("risk_score", 50.0), kwargs.get("regime", ""), kwargs.get("reason", ""), kwargs.get("timestamp", datetime.now(timezone.utc).isoformat()), kwargs.get("status", "OPEN"), kwargs.get("ai_explanation", ""), kwargs.get("tf_alignment", 0), kwargs.get("final_score", 0.0)))
             self.conn.commit()
             return cursor.lastrowid
 
-    def close_trade(
-        self,
-        trade_id,
-        exit_price,
-        realized_pnl,
-        pnl_percent,
-        commission,
-        reason,
-    ):
+    def close_trade(self, trade_id, exit_price, realized_pnl, pnl_percent, commission, reason):
         with self.lock:
-            self.conn.execute(
-                """
-                UPDATE trades
-                SET status='CLOSED',
-                    exit_price=?,
-                    realized_pnl=?,
-                    pnl_percent=?,
-                    commission=?,
-                    closed_at=?,
-                    close_reason=?
-                WHERE id=?
-                """,
-                (
-                    exit_price,
-                    realized_pnl,
-                    pnl_percent,
-                    commission,
-                    datetime.now(timezone.utc).isoformat(),
-                    reason,
-                    trade_id,
-                ),
-            )
+            self.conn.execute("UPDATE trades SET status='CLOSED', exit_price=?, realized_pnl=?, pnl_percent=?, commission=?, closed_at=?, close_reason=? WHERE id=?", (exit_price, realized_pnl, pnl_percent, commission, datetime.now(timezone.utc).isoformat(), reason, trade_id))
             self.conn.commit()
 
     def get_open_trades(self):
         with self.lock:
-            cursor = self.conn.execute(
-                "SELECT * FROM trades WHERE status='OPEN'"
-            )
+            cursor = self.conn.execute("SELECT * FROM trades WHERE status='OPEN'")
             rows = cursor.fetchall()
-            columns = [
-                description[0]
-                for description in cursor.description
-            ]
-
-        return [
-            dict(zip(columns, row))
-            for row in rows
-        ]
+            columns = [d[0] for d in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
 
     def count_today(self):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
         with self.lock:
-            result = self.conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM trades
-                WHERE timestamp LIKE ?
-                """,
-                (today + "%",),
-            ).fetchone()
-
+            result = self.conn.execute("SELECT COUNT(*) FROM trades WHERE timestamp LIKE ?", (today + "%",)).fetchone()
         return int(result[0] if result else 0)
 
     def open_count(self):
         with self.lock:
-            result = self.conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM trades
-                WHERE status='OPEN'
-                """
-            ).fetchone()
-
+            result = self.conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()
         return int(result[0] if result else 0)
 
     def consecutive_losses(self):
         with self.lock:
-            rows = self.conn.execute(
-                """
-                SELECT realized_pnl
-                FROM trades
-                WHERE status='CLOSED'
-                ORDER BY closed_at DESC
-                LIMIT ?
-                """,
-                (CFG.max_consecutive_losses,),
-            ).fetchall()
-
-        if len(rows) < CFG.max_consecutive_losses:
-            return 0
-
-        return sum(
-            1
-            for row in rows
-            if row[0] is not None and row[0] < 0
-        )
+            rows = self.conn.execute("SELECT realized_pnl FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT ?", (CFG.max_consecutive_losses,)).fetchall()
+        if len(rows) < CFG.max_consecutive_losses: return 0
+        return sum(1 for row in rows if row[0] is not None and row[0] < 0)
 
     def daily_pnl(self):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
         with self.lock:
-            result = self.conn.execute(
-                """
-                SELECT COALESCE(SUM(realized_pnl), 0)
-                FROM trades
-                WHERE status='CLOSED'
-                AND closed_at LIKE ?
-                """,
-                (today + "%",),
-            ).fetchone()
-
+            result = self.conn.execute("SELECT COALESCE(SUM(realized_pnl), 0) FROM trades WHERE status='CLOSED' AND closed_at LIKE ?", (today + "%",)).fetchone()
         return float(result[0] if result else 0.0)
 
     def get_stats(self):
         with self.lock:
-            total = self.conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM trades
-                WHERE status='CLOSED'
-                """
-            ).fetchone()[0]
-
-            wins = self.conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM trades
-                WHERE status='CLOSED'
-                AND realized_pnl > 0
-                """
-            ).fetchone()[0]
-
-            pnl = self.conn.execute(
-                """
-                SELECT COALESCE(SUM(realized_pnl), 0)
-                FROM trades
-                WHERE status='CLOSED'
-                """
-            ).fetchone()[0]
-
-        return {
-            "total": int(total),
-            "wins": int(wins),
-            "winrate": wins / total * 100.0 if total else 0.0,
-            "total_pnl": float(pnl or 0.0),
-        }
+            total = self.conn.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED'").fetchone()[0]
+            wins = self.conn.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED' AND realized_pnl > 0").fetchone()[0]
+            pnl = self.conn.execute("SELECT COALESCE(SUM(realized_pnl), 0) FROM trades WHERE status='CLOSED'").fetchone()[0]
+        return {"total": int(total), "wins": int(wins), "winrate": wins / total * 100.0 if total else 0.0, "total_pnl": float(pnl or 0.0)}
 
 
 db = TradeDB(CFG.db_path)
 
-
 app = Flask(__name__)
-
-bot_stats = {
-    "status": "STARTING",
-    "version": "APEX-v3.1-AMF-5SLOTS",
-    "uptime": 0,
-    "trades_today": 0,
-    "open_positions": 0,
-    "scanner": [],
-    "last_analysis": {},
-    "mode": "DRY_RUN" if CFG.dry_run else "LIVE",
-    "performance": {},
-}
-
+bot_stats = {"status": "STARTING", "version": "APEX-v3.1-AMF-5SLOTS", "uptime": 0, "trades_today": 0, "open_positions": 0, "scanner": [], "last_analysis": {}, "mode": "DRY_RUN" if CFG.dry_run else "LIVE", "performance": {}, "current_ip": ""}
 T0 = time.time()
 
 
 @app.route("/")
 def home():
-    stats = db.get_stats()
-    rows = ""
-
+    stats = db.get_stats(); rows = ""
     for symbol, value in bot_stats["last_analysis"].items():
         decision = value.get("decision", "WAIT")
-        css_class = (
-            "buy"
-            if decision == "BUY"
-            else "sell"
-            if decision == "SELL"
-            else "wait"
-        )
-
-        rows += (
-            "<tr>"
-            f"<td>{symbol}</td>"
-            f"<td class='{css_class}'>{decision}</td>"
-            f"<td>{value.get('score', 0):.1f}</td>"
-            f"<td>{value.get('regime', '')}</td>"
-            f"<td>{value.get('tf_align', 0)}</td>"
-            f"<td>{value.get('slot', '-')}</td>"
-            f"<td>{value.get('time', '')[-8:]}</td>"
-            "</tr>"
-        )
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>APEX Bot</title>
-        <style>
-            body {{
-                font-family: monospace;
-                background: #0a0a0a;
-                color: #00ff88;
-                padding: 20px;
-            }}
-            h1 {{ color: #00ccff; }}
-            table {{ border-collapse: collapse; width: 100%; }}
-            td, th {{ border: 1px solid #333; padding: 8px; }}
-            .buy {{ color: #00ff88; }}
-            .sell {{ color: #ff4466; }}
-            .wait {{ color: #888; }}
-            .stat {{
-                background: #111;
-                padding: 10px;
-                margin: 5px;
-                display: inline-block;
-                border-radius: 4px;
-            }}
-        </style>
-    </head>
-    <body>
-        <h1>APEX v3.1 + AMF + 5 Slots</h1>
-        <div>
-            <span class="stat">
-                Mode: <b>{bot_stats["mode"]}</b>
-            </span>
-            <span class="stat">
-                Uptime: {int(time.time() - T0)}s
-            </span>
-            <span class="stat">
-                Today: {bot_stats["trades_today"]}
-            </span>
-            <span class="stat">
-                Open: {bot_stats["open_positions"]}
-            </span>
-            <span class="stat">
-                WR: {stats["winrate"]:.1f}%
-            </span>
-        </div>
-
-        <h2>Last Analysis</h2>
-        <table>
-            <tr>
-                <th>Symbol</th>
-                <th>Decision</th>
-                <th>Score</th>
-                <th>Regime</th>
-                <th>TF Alignment</th>
-                <th>Slot</th>
-                <th>Time</th>
-            </tr>
-            {rows}
-        </table>
-    </body>
-    </html>
-    """
-
+        css_class = "buy" if decision == "BUY" else "sell" if decision == "SELL" else "wait"
+        rows += f"<tr><td>{symbol}</td><td class='{css_class}'>{decision}</td><td>{value.get('score', 0):.1f}</td><td>{value.get('regime', '')}</td><td>{value.get('tf_align', 0)}</td><td>{value.get('slot', '-')}</td><td>{value.get('time', '')[-8:]}</td></tr>"
+    return f"""<!DOCTYPE html><html><head><title>APEX Bot</title><style>body{{font-family:monospace;background:#0a0a0a;color:#00ff88;padding:20px}}h1{{color:#00ccff}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #333;padding:8px}}.buy{{color:#00ff88}}.sell{{color:#ff4466}}.wait{{color:#888}}.stat{{background:#111;padding:10px;margin:5px;display:inline-block;border-radius:4px}}</style></head><body><h1>APEX v3.1 + AMF + 5 Slots</h1><div><span class="stat">Mode: <b>{bot_stats["mode"]}</b></span><span class="stat">IP: {bot_stats["current_ip"]}</span><span class="stat">Uptime: {int(time.time() - T0)}s</span><span class="stat">Today: {bot_stats["trades_today"]}</span><span class="stat">Open: {bot_stats["open_positions"]}</span><span class="stat">WR: {stats["winrate"]:.1f}%</span></div><h2>Last Analysis</h2><table><tr><th>Symbol</th><th>Decision</th><th>Score</th><th>Regime</th><th>TF</th><th>Slot</th><th>Time</th></tr>{rows}</table></body></html>"""
 
 @app.route("/health")
 def health():
-    bot_stats["uptime"] = int(time.time() - T0)
-    bot_stats["trades_today"] = db.count_today()
-    bot_stats["open_positions"] = db.open_count()
-    bot_stats["performance"] = db.get_stats()
+    bot_stats["uptime"] = int(time.time() - T0); bot_stats["trades_today"] = db.count_today(); bot_stats["open_positions"] = db.open_count(); bot_stats["performance"] = db.get_stats()
     return jsonify(bot_stats)
-
 
 @app.route("/positions")
 def positions():
     return jsonify(db.get_open_trades())
 
-
 def run_server():
-    app.run(
-        host="127.0.0.1",
-        port=CFG.flask_port,
-        debug=False,
-        use_reloader=False,
-    )
+    app.run(host="0.0.0.0", port=CFG.flask_port, debug=False, use_reloader=False)
 
 
-exchange_public = ccxt.binance(
-    {
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "swap",
-            "adjustForTimeDifference": True,
-        },
-    }
-)
-
-exchange = ccxt.binance(
-    {
-        "apiKey": CFG.binance_api_key,
-        "secret": CFG.binance_secret,
-        "enableRateLimit": True,
-        "options": {
-            "defaultType": "swap",
-            "adjustForTimeDifference": True,
-        },
-    }
-)
+exchange_public = ccxt.binance({"enableRateLimit": True, "options": {"defaultType": "swap", "adjustForTimeDifference": True}})
+exchange = ccxt.binance({"apiKey": CFG.binance_api_key, "secret": CFG.binance_secret, "enableRateLimit": True, "options": {"defaultType": "swap", "adjustForTimeDifference": True}})
 
 
 def get_balance():
     try:
-        balance = exchange.fetch_balance(
-            {"type": "future"}
-        )
-        return float(
-            balance.get("USDT", {}).get("free", 0.0) or 0.0
-        )
+        balance = exchange.fetch_balance({"type": "future"})
+        return float(balance.get("USDT", {}).get("free", 0.0) or 0.0)
     except Exception as exc:
         logger.error("Balance error: %s", exc)
         return 0.0
 
-
 def daily_pnl_pct():
     balance = get_balance()
-
-    if balance <= 0:
-        return 0.0
-
+    if balance <= 0: return 0.0
     return db.daily_pnl() / balance * 100.0
-
 
 def get_pos(symbol):
     try:
         positions_data = exchange.fetch_positions([symbol])
-
         for position in positions_data:
-            contracts = float(
-                position.get("contracts", 0.0) or 0.0
-            )
-
-            if abs(contracts) > 0:
-                return position
-
+            contracts = float(position.get("contracts", 0.0) or 0.0)
+            if abs(contracts) > 0: return position
         return None
-
     except Exception as exc:
         logger.error("Position error %s: %s", symbol, exc)
         return "ERROR"
 
-
 def live_open_position_count():
     try:
         positions_data = exchange.fetch_positions()
-
-        return sum(
-            1
-            for position in positions_data
-            if abs(
-                float(position.get("contracts", 0.0) or 0.0)
-            ) > 0
-        )
-
+        return sum(1 for position in positions_data if abs(float(position.get("contracts", 0.0) or 0.0)) > 0)
     except Exception as exc:
         logger.error("Open positions error: %s", exc)
         return -1
 
-
-# NEW: تحديد الفتحة والرافعة بدون زيادة نسبة المخاطرة.
 def get_slot_configuration(final):
     current_positions = live_open_position_count()
-
-    if current_positions < 0:
-        return None
-
+    if current_positions < 0: return None
     slot = current_positions + 1
-
-    if slot > 5:
-        return None
-
-    # الفتحتان الأولى والثانية بالشروط الأساسية.
+    if slot > 5: return None
     if slot <= 2:
-        if (
-            final.final_score < CFG.min_confidence
-            or final.entry_quality < CFG.min_signal_score
-        ):
-            return None
-
-        leverage_multiplier = 1.0
-        slot_name = f"SLOT_{slot}_NORMAL"
-
-    # الفتحة الثالثة: إشارة أقوى ورافعة أعلى.
+        if final.final_score < CFG.min_confidence or final.entry_quality < CFG.min_signal_score: return None
+        leverage_multiplier = 1.0; slot_name = f"SLOT_{slot}_NORMAL"
     elif slot == 3:
-        if (
-            final.final_score < CFG.slot3_min_confidence
-            or final.entry_quality < CFG.slot3_min_score
-            or final.tf_alignment < 5
-        ):
-            return None
-
-        leverage_multiplier = CFG.slot3_leverage_mult
-        slot_name = "SLOT_3_STRONG"
-
-    # الفتحة الرابعة: توافق أكبر.
+        if final.final_score < CFG.slot3_min_confidence or final.entry_quality < CFG.slot3_min_score or final.tf_alignment < 5: return None
+        leverage_multiplier = CFG.slot3_leverage_mult; slot_name = "SLOT_3_STRONG"
     elif slot == 4:
-        if (
-            final.final_score < CFG.slot4_min_confidence
-            or final.entry_quality < CFG.slot4_min_score
-            or final.tf_alignment < 6
-        ):
-            return None
-
-        leverage_multiplier = CFG.slot4_leverage_mult
-        slot_name = "SLOT_4_VERY_STRONG"
-
-    # الفتحة الخامسة: أعلى شروط، وليست دخولاً عادياً.
+        if final.final_score < CFG.slot4_min_confidence or final.entry_quality < CFG.slot4_min_score or final.tf_alignment < 6: return None
+        leverage_multiplier = CFG.slot4_leverage_mult; slot_name = "SLOT_4_VERY_STRONG"
     else:
-        if (
-            final.final_score < CFG.slot5_min_confidence
-            or final.entry_quality < CFG.slot5_min_score
-            or final.tf_alignment < CFG.slot5_min_modules
-        ):
-            return None
-
-        leverage_multiplier = CFG.slot5_leverage_mult
-        slot_name = "SLOT_5_SNIPER"
-
-    leverage = int(
-        round(CFG.leverage * leverage_multiplier)
-    )
-
-    leverage = max(1, min(
-        leverage,
-        CFG.max_leverage_cap,
-    ))
-
-    return {
-        "slot": slot,
-        "name": slot_name,
-        "leverage": leverage,
-        # MODIFIED: المخاطرة لا تتضاعف مع الرافعة.
-        "risk_multiplier": 1.0,
-    }
+        if final.final_score < CFG.slot5_min_confidence or final.entry_quality < CFG.slot5_min_score or final.tf_alignment < CFG.slot5_min_modules: return None
+        leverage_multiplier = CFG.slot5_leverage_mult; slot_name = "SLOT_5_SNIPER"
+    leverage = int(round(CFG.leverage * leverage_multiplier))
+    leverage = max(1, min(leverage, CFG.max_leverage_cap))
+    return {"slot": slot, "name": slot_name, "leverage": leverage, "risk_multiplier": 1.0}
 
 
 class AIAnalyst:
     def analyze(self, symbol, apex_output):
-        result = {
-            "decision": "WAIT",
-            "confidence": 0.0,
-            "explanation": "",
-            "risk_warnings": [],
-            "error": False,
-        }
-
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
         if not CFG.nvidia_api_key:
-            result["error"] = True
-            result["explanation"] = "NVIDIA_API_KEY is not configured"
-            return result
-
-        if not CFG.use_ai_veto and not CFG.use_ai_explainer:
-            return result
-
-        prompt = f"""
-You are a conservative trading risk analyst.
-
-Symbol: {symbol}
-APEX decision: {apex_output.decision.value}
-Regime: {apex_output.regime.value}
-Composite score: {apex_output.composite_score:.2f}
-Confidence: {apex_output.confidence:.2f}
-Direction: {apex_output.direction.value}
-RSI: {apex_output.rsi:.2f}
-ADX: {apex_output.trend_strength:.2f}
-Volatility: {apex_output.volatility_pct:.2f}
-Bull modules: {apex_output.bull_modules}
-Bear modules: {apex_output.bear_modules}
-
-Return JSON only:
-{{
-  "decision": "BUY or SELL or WAIT",
-  "confidence": 0,
-  "explanation": "short explanation",
-  "risk_warnings": []
-}}
-"""
-
+            result["error"] = True; result["explanation"] = "NVIDIA_API_KEY not configured"; return result
+        if not CFG.use_ai_veto and not CFG.use_ai_explainer: return result
+        prompt = f"You are a conservative trading risk analyst.\nSymbol: {symbol}\nAPEX decision: {apex_output.decision.value}\nRegime: {apex_output.regime.value}\nComposite score: {apex_output.composite_score:.2f}\nConfidence: {apex_output.confidence:.2f}\nDirection: {apex_output.direction.value}\nRSI: {apex_output.rsi:.2f}\nADX: {apex_output.trend_strength:.2f}\nVolatility: {apex_output.volatility_pct:.2f}\nBull modules: {apex_output.bull_modules}\nBear modules: {apex_output.bear_modules}\n\nReturn JSON only:\n{{\"decision\": \"BUY or SELL or WAIT\", \"confidence\": 0, \"explanation\": \"short explanation\", \"risk_warnings\": []}}"
         try:
-            response = requests.post(
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers={
-                    "Authorization": (
-                        f"Bearer {CFG.nvidia_api_key}"
-                    ),
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": CFG.ai_model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Return valid JSON only. "
-                                "Be conservative."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        },
-                    ],
-                    "max_tokens": 2048,
-                    "temperature": 0.2,
-                    "stream": False,
-                },
-                timeout=60,
-            )
-
+            response = requests.post("https://integrate.api.nvidia.com/v1/chat/completions", headers={"Authorization": f"Bearer {CFG.nvidia_api_key}", "Accept": "application/json", "Content-Type": "application/json"}, json={"model": CFG.ai_model, "messages": [{"role": "system", "content": "Return valid JSON only. Be conservative."}, {"role": "user", "content": prompt}], "max_tokens": 2048, "temperature": 0.2, "stream": False}, timeout=60)
             response.raise_for_status()
-            payload = response.json()
-            raw = payload["choices"][0]["message"]["content"]
-            raw = raw.strip()
-
-            if raw.startswith("```"):
-                raw = raw.replace("```json", "")
-                raw = raw.replace("```", "")
-                raw = raw.strip()
-
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-
-            if start < 0 or end <= start:
-                raise ValueError("AI did not return JSON")
-
+            payload = response.json(); raw = payload["choices"][0]["message"]["content"].strip()
+            if raw.startswith("```"): raw = raw.replace("```json", "").replace("```", "").strip()
+            start = raw.find("{"); end = raw.rfind("}") + 1
+            if start < 0 or end <= start: raise ValueError("AI did not return JSON")
             parsed = json.loads(raw[start:end])
-
-            decision = str(
-                parsed.get("decision", "WAIT")
-            ).upper()
-
-            if decision not in ("BUY", "SELL", "WAIT"):
-                decision = "WAIT"
-
-            result["decision"] = decision
-            result["confidence"] = clamp(
-                float(parsed.get("confidence", 0.0)),
-                0.0,
-                100.0,
-            )
-            result["explanation"] = str(
-                parsed.get("explanation", "")
-            )
-            result["risk_warnings"] = parsed.get(
-                "risk_warnings", []
-            )
-
+            decision = str(parsed.get("decision", "WAIT")).upper()
+            if decision not in ("BUY", "SELL", "WAIT"): decision = "WAIT"
+            result["decision"] = decision; result["confidence"] = clamp(float(parsed.get("confidence", 0.0)), 0.0, 100.0)
+            result["explanation"] = str(parsed.get("explanation", "")); result["risk_warnings"] = parsed.get("risk_warnings", [])
         except Exception as exc:
-            result["error"] = True
-            result["explanation"] = f"AI_ERROR: {str(exc)[:150]}"
+            result["error"] = True; result["explanation"] = f"AI_ERROR: {str(exc)[:150]}"
             logger.warning("AI error %s: %s", symbol, exc)
-
         return result
 
 
@@ -2854,81 +1239,34 @@ ai_analyst = AIAnalyst()
 
 class CandleManager:
     def __init__(self, maxlen=500):
-        self._candles = {}
-        self._forming = {}
-        self._lock = threading.Lock()
-        self._maxlen = maxlen
-
+        self._candles = {}; self._forming = {}; self._lock = threading.Lock(); self._maxlen = maxlen
     def ensure(self, symbol_key, timeframes):
         with self._lock:
             if symbol_key not in self._candles:
-                self._candles[symbol_key] = {
-                    tf: deque(maxlen=self._maxlen)
-                    for tf in timeframes
-                }
-
-                self._forming[symbol_key] = {
-                    tf: None
-                    for tf in timeframes
-                }
-
+                self._candles[symbol_key] = {tf: deque(maxlen=self._maxlen) for tf in timeframes}
+                self._forming[symbol_key] = {tf: None for tf in timeframes}
     def update(self, symbol_key, timeframe, candle, closed):
         with self._lock:
-            if (
-                symbol_key not in self._candles
-                or timeframe not in self._candles[symbol_key]
-            ):
-                return
-
+            if symbol_key not in self._candles or timeframe not in self._candles[symbol_key]: return
             if closed:
                 candles = self._candles[symbol_key][timeframe]
-
-                if candles and candles[-1][0] == candle[0]:
-                    candles[-1] = candle
-                else:
-                    candles.append(candle)
-
+                if candles and candles[-1][0] == candle[0]: candles[-1] = candle
+                else: candles.append(candle)
                 self._forming[symbol_key][timeframe] = None
-            else:
-                self._forming[symbol_key][timeframe] = candle
-
+            else: self._forming[symbol_key][timeframe] = candle
     def get(self, symbol_key, timeframe):
         with self._lock:
-            if (
-                symbol_key not in self._candles
-                or timeframe not in self._candles[symbol_key]
-            ):
-                return []
-
-            return list(
-                self._candles[symbol_key][timeframe]
-            )
-
+            if symbol_key not in self._candles or timeframe not in self._candles[symbol_key]: return []
+            return list(self._candles[symbol_key][timeframe])
     def count(self, symbol_key, timeframe):
-        with self._lock:
-            return len(
-                self._candles.get(
-                    symbol_key,
-                    {},
-                ).get(timeframe, [])
-            )
-
+        with self._lock: return len(self._candles.get(symbol_key, {}).get(timeframe, []))
     def load(self, symbol_key, timeframe, data):
         with self._lock:
-            if symbol_key not in self._candles:
-                return
-
+            if symbol_key not in self._candles: return
             if data and len(data) > 1:
-                self._candles[symbol_key][timeframe] = deque(
-                    data[:-1],
-                    maxlen=self._maxlen,
-                )
+                self._candles[symbol_key][timeframe] = deque(data[:-1], maxlen=self._maxlen)
                 self._forming[symbol_key][timeframe] = data[-1]
-            else:
-                self._candles[symbol_key][timeframe] = deque(
-                    data or [],
-                    maxlen=self._maxlen,
-                )
+            else: self._candles[symbol_key][timeframe] = deque(data or [], maxlen=self._maxlen)
 
 
 cm = CandleManager(CFG.candle_maxlen)
@@ -2940,1315 +1278,338 @@ active_lock = threading.Lock()
 
 class OpportunityPool:
     def __init__(self, max_size=5, ttl_seconds=300):
-        self.pool = []
-        self.max_size = max_size
-        self.ttl_seconds = ttl_seconds
-        self.lock = threading.Lock()
-
+        self.pool = []; self.max_size = max_size; self.ttl_seconds = ttl_seconds; self.lock = threading.Lock()
     def add_or_update(self, symbol, final, apex_output):
         with self.lock:
-            self.pool = [
-                item
-                for item in self.pool
-                if item["symbol"] != symbol
-            ]
-
-            rr_score = clamp(
-                safe_div(apex_output.rr_ratio, 4.0) * 100.0
-            )
-
-            volume_quality = (
-                70.0
-                if apex_output.volume_spike
-                else 50.0
-            )
-
-            opportunity_score = (
-                final.final_score * 0.45
-                + apex_output.confidence * 0.25
-                + rr_score * 0.15
-                + volume_quality * 0.10
-                + final.entry_quality * 0.05
-            )
-
-            self.pool.append(
-                {
-                    "symbol": symbol,
-                    "final": final,
-                    "apex": apex_output,
-                    "opp_score": opportunity_score,
-                    "timestamp": time.time(),
-                }
-            )
-
-            self.pool.sort(
-                key=lambda item: item["opp_score"],
-                reverse=True,
-            )
-
+            self.pool = [item for item in self.pool if item["symbol"] != symbol]
+            rr_score = clamp(safe_div(apex_output.rr_ratio, 4.0) * 100.0)
+            volume_quality = 70.0 if apex_output.volume_spike else 50.0
+            opportunity_score = final.final_score * 0.45 + apex_output.confidence * 0.25 + rr_score * 0.15 + volume_quality * 0.10 + final.entry_quality * 0.05
+            self.pool.append({"symbol": symbol, "final": final, "apex": apex_output, "opp_score": opportunity_score, "timestamp": time.time()})
+            self.pool.sort(key=lambda item: item["opp_score"], reverse=True)
             self.pool = self.pool[:self.max_size]
-
     def get_best_opportunity(self):
         with self.lock:
             now = time.time()
-
-            self.pool = [
-                item
-                for item in self.pool
-                if now - item["timestamp"] < self.ttl_seconds
-            ]
-
-            if not self.pool:
-                return None
-
-            self.pool.sort(
-                key=lambda item: item["opp_score"],
-                reverse=True,
-            )
-
+            self.pool = [item for item in self.pool if now - item["timestamp"] < self.ttl_seconds]
+            if not self.pool: return None
+            self.pool.sort(key=lambda item: item["opp_score"], reverse=True)
             return self.pool[0]
-
     def remove(self, symbol):
         with self.lock:
-            self.pool = [
-                item
-                for item in self.pool
-                if item["symbol"] != symbol
-            ]
+            self.pool = [item for item in self.pool if item["symbol"] != symbol]
 
 
-opp_pool = OpportunityPool(
-    max_size=5,
-    ttl_seconds=300,
-)
+opp_pool = OpportunityPool(max_size=5, ttl_seconds=300)
 
 
 def emergency_close(symbol, reason):
-    logger.critical(
-        "EMERGENCY CLOSE %s: %s",
-        symbol,
-        reason,
-    )
-
+    logger.critical("EMERGENCY CLOSE %s: %s", symbol, reason)
     try:
         position = get_pos(symbol)
-
         if position and position != "ERROR":
-            contracts = abs(
-                float(position.get("contracts", 0.0) or 0.0)
-            )
-
-            side = str(
-                position.get("side", "")
-            ).lower()
-
+            contracts = abs(float(position.get("contracts", 0.0) or 0.0))
+            side = str(position.get("side", "")).lower()
             if contracts > 0:
-                close_side = (
-                    "sell"
-                    if side == "long"
-                    else "buy"
-                )
-
-                exchange.create_market_order(
-                    symbol,
-                    close_side,
-                    contracts,
-                    params={"reduceOnly": True},
-                )
-
-        try:
-            exchange.cancel_all_orders(symbol)
-        except Exception:
-            pass
-
+                close_side = "sell" if side == "long" else "buy"
+                exchange.create_market_order(symbol, close_side, contracts, params={"reduceOnly": True})
+        try: exchange.cancel_all_orders(symbol)
+        except Exception: pass
     except Exception as exc:
-        logger.critical(
-            "Emergency close failed %s: %s",
-            symbol,
-            exc,
-        )
+        logger.critical("Emergency close failed %s: %s", symbol, exc)
 
 
 def execute_trade(symbol, final):
     state = trade_state.setdefault(symbol, {})
-
-    if state.get("executing", False):
-        return False
-
+    if state.get("executing", False): return False
     with execution_lock:
         try:
             state["executing"] = True
-
-            if db.count_today() >= CFG.max_daily_trades:
-                logger.warning(
-                    "Daily trade limit reached"
-                )
-                return False
-
-            if daily_pnl_pct() <= -CFG.max_daily_loss_pct:
-                logger.warning(
-                    "Daily loss limit reached"
-                )
-                return False
-
-            if (
-                db.consecutive_losses()
-                >= CFG.max_consecutive_losses
-            ):
-                logger.warning(
-                    "Consecutive loss limit reached"
-                )
-                return False
-
+            if db.count_today() >= CFG.max_daily_trades: return False
+            if daily_pnl_pct() <= -CFG.max_daily_loss_pct: return False
+            if db.consecutive_losses() >= CFG.max_consecutive_losses: return False
             current_position = get_pos(symbol)
-
-            if current_position == "ERROR":
-                return False
-
-            if current_position:
-                logger.info(
-                    "Position already open: %s",
-                    symbol,
-                )
-                return False
-
+            if current_position == "ERROR": return False
+            if current_position: return False
             live_count = live_open_position_count()
-
-            if live_count < 0:
-                return False
-
-            if live_count >= CFG.max_open_positions:
-                return False
-
-            # MODIFIED: لا نلغي أوامر يدوية تلقائياً.
+            if live_count < 0: return False
+            if live_count >= CFG.max_open_positions: return False
             try:
-                pending_orders = exchange.fetch_open_orders(
-                    symbol
-                )
-
-                if pending_orders:
-                    logger.warning(
-                        "Pending orders found for %s",
-                        symbol,
-                    )
-                    return False
-
-            except Exception:
-                pass
-
-            if (
-                time.time() - state.get("last_trade_time", 0)
-                < CFG.cooldown_seconds
-            ):
-                return False
-
+                pending_orders = exchange.fetch_open_orders(symbol)
+                if pending_orders: return False
+            except Exception: pass
+            if time.time() - state.get("last_trade_time", 0) < CFG.cooldown_seconds: return False
             slot_config = get_slot_configuration(final)
-
-            if not slot_config:
-                logger.info(
-                    "Slot requirements not met for %s",
-                    symbol,
-                )
-                return False
-
-            ticker = exchange_public.fetch_ticker(symbol)
-            price = float(ticker["last"])
-
-            side = (
-                "buy"
-                if final.decision == Decision.BUY
-                else "sell"
-            )
-
+            if not slot_config: return False
+            ticker = exchange_public.fetch_ticker(symbol); price = float(ticker["last"])
+            side = "buy" if final.decision == Decision.BUY else "sell"
             balance = get_balance()
-
-            if balance <= 0:
-                logger.error(
-                    "No available balance"
-                )
-                return False
-
-            stop_price = (
-                price * (1.0 - final.sl_percent / 100.0)
-                if side == "buy"
-                else price * (1.0 + final.sl_percent / 100.0)
-            )
-
-            # MODIFIED: الرافعة لا تضاعف حجم المخاطرة.
-            risk_amount = (
-                balance * CFG.risk_per_trade_pct / 100.0
-            )
-
+            if balance <= 0: return False
+            stop_price = price * (1.0 - final.sl_percent / 100.0) if side == "buy" else price * (1.0 + final.sl_percent / 100.0)
+            risk_amount = balance * CFG.risk_per_trade_pct / 100.0
             price_distance = abs(price - stop_price)
-
-            if price_distance <= 0:
-                return False
-
-            quantity = risk_amount / price_distance
-            quantity = float(
-                exchange.amount_to_precision(
-                    symbol,
-                    quantity,
-                )
-            )
-
-            if quantity <= 0:
-                return False
-
+            if price_distance <= 0: return False
+            quantity = float(exchange.amount_to_precision(symbol, risk_amount / price_distance))
+            if quantity <= 0: return False
             leverage = slot_config["leverage"]
-
-            logger.info(
-                "Preparing %s | %s | slot=%s | leverage=%sx",
-                symbol,
-                slot_config["name"],
-                slot_config["slot"],
-                leverage,
-            )
-
+            logger.info("Preparing %s | %s | slot=%s | leverage=%sx", symbol, slot_config["name"], slot_config["slot"], leverage)
             if CFG.dry_run:
-                take_profit = (
-                    price * (1.0 + final.tp_percent / 100.0)
-                    if side == "buy"
-                    else price * (1.0 - final.tp_percent / 100.0)
-                )
-
+                take_profit = price * (1.0 + final.tp_percent / 100.0) if side == "buy" else price * (1.0 - final.tp_percent / 100.0)
                 state["last_trade_time"] = time.time()
-
-                db.insert_trade(
-                    symbol=symbol,
-                    side="LONG" if side == "buy" else "SHORT",
-                    mode="DRY_RUN",
-                    entry_price=price,
-                    quantity=quantity,
-                    sl_price=stop_price,
-                    tp_price=take_profit,
-                    confidence=final.final_score,
-                    entry_quality=final.entry_quality,
-                    risk_score=final.risk_score,
-                    regime=final.regime,
-                    reason=(
-                        f"{slot_config['name']} | "
-                        f"APEX={final.apex_score:.1f}"
-                    ),
-                    timestamp=datetime.now(
-                        timezone.utc
-                    ).isoformat(),
-                    status="OPEN",
-                    ai_explanation=final.ai_explanation,
-                    tf_alignment=final.tf_alignment,
-                    final_score=final.final_score,
-                )
-
-                logger.info(
-                    "DRY RUN trade registered: %s",
-                    symbol,
-                )
+                db.insert_trade(symbol=symbol, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=quantity, sl_price=stop_price, tp_price=take_profit, confidence=final.final_score, entry_quality=final.entry_quality, risk_score=final.risk_score, regime=final.regime, reason=f"{slot_config['name']} | APEX={final.apex_score:.1f}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN", ai_explanation=final.ai_explanation, tf_alignment=final.tf_alignment, final_score=final.final_score)
+                logger.info("DRY RUN trade registered: %s", symbol)
                 return True
-
-            try:
-                exchange.set_leverage(
-                    leverage,
-                    symbol,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not set leverage %s: %s",
-                    symbol,
-                    exc,
-                )
-
-            order = exchange.create_market_order(
-                symbol,
-                side,
-                quantity,
-            )
-
-            entry_order_id = order.get("id", "")
-            position = None
-
+            try: exchange.set_leverage(leverage, symbol)
+            except Exception as exc: logger.warning("Could not set leverage %s: %s", symbol, exc)
+            order = exchange.create_market_order(symbol, side, quantity)
+            entry_order_id = order.get("id", ""); position = None
             for _ in range(10):
                 position = get_pos(symbol)
-
-                if position and position != "ERROR":
-                    break
-
+                if position and position != "ERROR": break
                 time.sleep(0.5)
-
-            if not position or position == "ERROR":
-                emergency_close(
-                    symbol,
-                    "position not confirmed",
-                )
-                return False
-
-            entry_price = float(
-                position.get("entryPrice", price)
-                or price
-            )
-
-            actual_quantity = abs(
-                float(
-                    position.get("contracts", quantity)
-                    or quantity
-                )
-            )
-
-            if actual_quantity <= 0:
-                emergency_close(
-                    symbol,
-                    "zero position quantity",
-                )
-                return False
-
-            stop_price = (
-                entry_price
-                * (1.0 - final.sl_percent / 100.0)
-                if side == "buy"
-                else entry_price
-                * (1.0 + final.sl_percent / 100.0)
-            )
-
-            take_profit = (
-                entry_price
-                * (1.0 + final.tp_percent / 100.0)
-                if side == "buy"
-                else entry_price
-                * (1.0 - final.tp_percent / 100.0)
-            )
-
-            stop_price = float(
-                exchange.price_to_precision(
-                    symbol,
-                    stop_price,
-                )
-            )
-
-            take_profit = float(
-                exchange.price_to_precision(
-                    symbol,
-                    take_profit,
-                )
-            )
-
-            close_side = (
-                "sell"
-                if side == "buy"
-                else "buy"
-            )
-
+            if not position or position == "ERROR": emergency_close(symbol, "position not confirmed"); return False
+            entry_price = float(position.get("entryPrice", price) or price)
+            actual_quantity = abs(float(position.get("contracts", quantity) or quantity))
+            if actual_quantity <= 0: emergency_close(symbol, "zero position quantity"); return False
+            stop_price = entry_price * (1.0 - final.sl_percent / 100.0) if side == "buy" else entry_price * (1.0 + final.sl_percent / 100.0)
+            take_profit = entry_price * (1.0 + final.tp_percent / 100.0) if side == "buy" else entry_price * (1.0 - final.tp_percent / 100.0)
+            stop_price = float(exchange.price_to_precision(symbol, stop_price)); take_profit = float(exchange.price_to_precision(symbol, take_profit))
+            close_side = "sell" if side == "buy" else "buy"
             try:
-                stop_order = exchange.create_order(
-                    symbol,
-                    "STOP_MARKET",
-                    close_side,
-                    actual_quantity,
-                    None,
-                    {
-                        "stopPrice": stop_price,
-                        "reduceOnly": True,
-                        "workingType": "MARK_PRICE",
-                    },
-                )
-
+                stop_order = exchange.create_order(symbol, "STOP_MARKET", close_side, actual_quantity, None, {"stopPrice": stop_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
                 stop_order_id = stop_order.get("id", "")
-
-            except Exception as exc:
-                logger.critical(
-                    "Stop-loss creation failed: %s",
-                    exc,
-                )
-                emergency_close(
-                    symbol,
-                    "stop-loss creation failed",
-                )
-                return False
-
+            except Exception as exc: logger.critical("Stop-loss creation failed: %s", exc); emergency_close(symbol, "stop-loss creation failed"); return False
             try:
-                take_profit_order = exchange.create_order(
-                    symbol,
-                    "TAKE_PROFIT_MARKET",
-                    close_side,
-                    actual_quantity,
-                    None,
-                    {
-                        "stopPrice": take_profit,
-                        "reduceOnly": True,
-                        "workingType": "MARK_PRICE",
-                    },
-                )
-
-                take_profit_order_id = (
-                    take_profit_order.get("id", "")
-                )
-
+                take_profit_order = exchange.create_order(symbol, "TAKE_PROFIT_MARKET", close_side, actual_quantity, None, {"stopPrice": take_profit, "reduceOnly": True, "workingType": "MARK_PRICE"})
+                take_profit_order_id = take_profit_order.get("id", "")
             except Exception as exc:
-                logger.critical(
-                    "Take-profit creation failed: %s",
-                    exc,
-                )
-
-                try:
-                    exchange.cancel_order(
-                        stop_order_id,
-                        symbol,
-                    )
-                except Exception:
-                    pass
-
-                emergency_close(
-                    symbol,
-                    "take-profit creation failed",
-                )
-                return False
-
+                logger.critical("Take-profit creation failed: %s", exc)
+                try: exchange.cancel_order(stop_order_id, symbol)
+                except Exception: pass
+                emergency_close(symbol, "take-profit creation failed"); return False
             state["last_trade_time"] = time.time()
-
-            trade_id = db.insert_trade(
-                symbol=symbol,
-                side="LONG" if side == "buy" else "SHORT",
-                mode="LIVE",
-                entry_price=entry_price,
-                quantity=actual_quantity,
-                sl_price=stop_price,
-                tp_price=take_profit,
-                sl_order_id=stop_order_id,
-                tp_order_id=take_profit_order_id,
-                entry_order_id=entry_order_id,
-                confidence=final.final_score,
-                entry_quality=final.entry_quality,
-                risk_score=final.risk_score,
-                regime=final.regime,
-                reason=(
-                    f"{slot_config['name']} | "
-                    f"leverage={leverage}x"
-                ),
-                timestamp=datetime.now(
-                    timezone.utc
-                ).isoformat(),
-                status="OPEN",
-                ai_explanation=final.ai_explanation,
-                tf_alignment=final.tf_alignment,
-                final_score=final.final_score,
-            )
-
-            logger.info(
-                "LIVE trade #%s opened on %s",
-                trade_id,
-                symbol,
-            )
-
+            trade_id = db.insert_trade(symbol=symbol, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry_price, quantity=actual_quantity, sl_price=stop_price, tp_price=take_profit, sl_order_id=stop_order_id, tp_order_id=take_profit_order_id, entry_order_id=entry_order_id, confidence=final.final_score, entry_quality=final.entry_quality, risk_score=final.risk_score, regime=final.regime, reason=f"{slot_config['name']} | leverage={leverage}x", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN", ai_explanation=final.ai_explanation, tf_alignment=final.tf_alignment, final_score=final.final_score)
+            logger.info("LIVE trade #%s opened on %s", trade_id, symbol)
             return True
-
         except Exception as exc:
-            logger.error(
-                "Execution error %s: %s",
-                symbol,
-                exc,
-                exc_info=True,
-            )
+            logger.error("Execution error %s: %s", symbol, exc, exc_info=True)
             return False
-
         finally:
             state["executing"] = False
 
 
 class PositionMonitor:
     def __init__(self, exchange_instance, database, config):
-        self.exchange = exchange_instance
-        self.db = database
-        self.cfg = config
-        self.trailing_peaks = {}
-        self.running = True
-
-    def start(self):
-        threading.Thread(
-            target=self._loop,
-            daemon=True,
-        ).start()
-
-        logger.info(
-            "Position monitor started"
-        )
-
-    def stop(self):
-        self.running = False
-
+        self.exchange = exchange_instance; self.db = database; self.cfg = config; self.trailing_peaks = {}; self.running = True
+    def start(self): threading.Thread(target=self._loop, daemon=True).start(); logger.info("Position monitor started")
+    def stop(self): self.running = False
     def _loop(self):
         while self.running:
-            try:
-                self.monitor_live_positions()
-            except Exception as exc:
-                logger.error(
-                    "Monitor error: %s",
-                    exc,
-                )
-
+            try: self.monitor_live_positions()
+            except Exception as exc: logger.error("Monitor error: %s", exc)
             time.sleep(self.cfg.monitor_interval)
-
     def monitor_live_positions(self):
-        if self.cfg.dry_run:
-            return
-
-        try:
-            positions = self.exchange.fetch_positions()
-
-        except Exception as exc:
-            logger.error(
-                "Fetch positions failed: %s",
-                exc,
-            )
-            return
-
-        active = [
-            position
-            for position in positions
-            if abs(
-                float(position.get("contracts", 0.0) or 0.0)
-            ) > 0
-        ]
-
+        if self.cfg.dry_run: return
+        try: positions = self.exchange.fetch_positions()
+        except Exception as exc: logger.error("Fetch positions failed: %s", exc); return
+        active = [p for p in positions if abs(float(p.get("contracts", 0.0) or 0.0)) > 0]
         for position in active:
-            symbol = position["symbol"]
-            side = str(
-                position.get("side", "")
-            ).upper()
-
-            quantity = abs(
-                float(
-                    position.get("contracts", 0.0)
-                    or 0.0
-                )
-            )
-
-            entry_price = float(
-                position.get("entryPrice", 0.0)
-                or 0.0
-            )
-
-            if quantity <= 0 or entry_price <= 0:
-                continue
-
-            try:
-                current_price = float(
-                    self.exchange.fetch_ticker(
-                        symbol
-                    )["last"]
-                )
-            except Exception:
-                continue
-
-            max_take_profit_price = (
-                entry_price
-                * (1.0 + self.cfg.max_tp_percent / 100.0)
-                if side == "LONG"
-                else entry_price
-                * (1.0 - self.cfg.max_tp_percent / 100.0)
-            )
-
-            if side == "LONG":
-                current_distance = current_price - entry_price
-                target_distance = (
-                    max_take_profit_price - entry_price
-                )
-            else:
-                current_distance = entry_price - current_price
-                target_distance = (
-                    entry_price - max_take_profit_price
-                )
-
-            if target_distance <= 0:
-                continue
-
-            progress = (
-                current_distance / target_distance
-            ) * 100.0
-
+            symbol = position["symbol"]; side = str(position.get("side", "")).upper()
+            quantity = abs(float(position.get("contracts", 0.0) or 0.0)); entry_price = float(position.get("entryPrice", 0.0) or 0.0)
+            if quantity <= 0 or entry_price <= 0: continue
+            try: current_price = float(self.exchange.fetch_ticker(symbol)["last"])
+            except Exception: continue
+            tp_price = entry_price * (1.0 + self.cfg.max_tp_percent / 100.0) if side == "LONG" else entry_price * (1.0 - self.cfg.max_tp_percent / 100.0)
+            if side == "LONG": current_distance = current_price - entry_price; target_distance = tp_price - entry_price
+            else: current_distance = entry_price - current_price; target_distance = entry_price - tp_price
+            if target_distance <= 0: continue
+            progress = (current_distance / target_distance) * 100.0
             peak_key = f"{symbol}:{side}"
-            previous_peak = self.trailing_peaks.get(
-                peak_key,
-                0.0,
-            )
-
-            self.trailing_peaks[peak_key] = max(
-                previous_peak,
-                progress,
-            )
-
+            self.trailing_peaks[peak_key] = max(self.trailing_peaks.get(peak_key, 0.0), progress)
             peak = self.trailing_peaks[peak_key]
-
-            if (
-                self.cfg.trailing_enabled
-                and peak >= self.cfg.trailing_activation
-                and progress
-                <= peak - self.cfg.trailing_drop
-            ):
-                self.close_position_direct(
-                    symbol,
-                    side,
-                    quantity,
-                    current_price,
-                    "TRAILING_TAKE_PROFIT",
-                )
-
-    def close_position_direct(
-        self,
-        symbol,
-        side,
-        quantity,
-        exit_price,
-        reason,
-    ):
+            if self.cfg.trailing_enabled and peak >= self.cfg.trailing_activation and progress <= peak - self.cfg.trailing_drop:
+                self.close_position_direct(symbol, side, quantity, current_price, "TRAILING_TAKE_PROFIT")
+    def close_position_direct(self, symbol, side, quantity, exit_price, reason):
         try:
-            close_side = (
-                "sell"
-                if side == "LONG"
-                else "buy"
-            )
-
-            self.exchange.create_market_order(
-                symbol,
-                close_side,
-                quantity,
-                params={"reduceOnly": True},
-            )
-
-            try:
-                self.exchange.cancel_all_orders(symbol)
-            except Exception:
-                pass
-
+            close_side = "sell" if side == "LONG" else "buy"
+            self.exchange.create_market_order(symbol, close_side, quantity, params={"reduceOnly": True})
+            try: self.exchange.cancel_all_orders(symbol)
+            except Exception: pass
             for trade in self.db.get_open_trades():
-                if trade["symbol"] != symbol:
-                    continue
-
-                trade_side = str(
-                    trade.get("side", "")
-                ).upper()
-
-                trade_quantity = float(
-                    trade.get("quantity", quantity)
-                    or quantity
-                )
-
-                entry = float(
-                    trade.get("entry_price", exit_price)
-                )
-
-                if trade_side == "LONG":
-                    pnl = (
-                        exit_price - entry
-                    ) * trade_quantity
-                    pnl_percent = (
-                        exit_price - entry
-                    ) / entry * 100.0
-                else:
-                    pnl = (
-                        entry - exit_price
-                    ) * trade_quantity
-                    pnl_percent = (
-                        entry - exit_price
-                    ) / entry * 100.0
-
-                self.db.close_trade(
-                    trade["id"],
-                    exit_price,
-                    pnl,
-                    pnl_percent,
-                    0.0,
-                    reason,
-                )
-
-        except Exception as exc:
-            logger.error(
-                "Close position failed %s: %s",
-                symbol,
-                exc,
-            )
+                if trade["symbol"] != symbol: continue
+                trade_side = str(trade.get("side", "")).upper(); trade_quantity = float(trade.get("quantity", quantity) or quantity); entry = float(trade.get("entry_price", exit_price))
+                if trade_side == "LONG": pnl = (exit_price - entry) * trade_quantity; pnl_percent = (exit_price - entry) / entry * 100.0
+                else: pnl = (entry - exit_price) * trade_quantity; pnl_percent = (entry - exit_price) / entry * 100.0
+                self.db.close_trade(trade["id"], exit_price, pnl, pnl_percent, 0.0, reason)
+        except Exception as exc: logger.error("Close position failed %s: %s", symbol, exc)
 
 
 class MarketScanner:
-    def __init__(self):
-        self.running = True
-
-    def start(self):
-        threading.Thread(
-            target=self._loop,
-            daemon=True,
-        ).start()
-
-        logger.info("Scanner started")
-
-    def stop(self):
-        self.running = False
-
+    def __init__(self): self.running = True
+    def start(self): threading.Thread(target=self._loop, daemon=True).start(); logger.info("Scanner started")
+    def stop(self): self.running = False
     def _loop(self):
         time.sleep(5)
-
         while self.running:
-            try:
-                self._cycle()
-            except Exception as exc:
-                logger.error(
-                    "Scanner cycle error: %s",
-                    exc,
-                    exc_info=True,
-                )
-
+            try: self._cycle()
+            except Exception as exc: logger.error("Scanner cycle error: %s", exc, exc_info=True)
             time.sleep(CFG.scanner_interval)
-
     def _cycle(self):
         candidates = []
-
         for symbol_key, symbol in CFG.watchlist.items():
             try:
-                result = self._quick(
-                    symbol_key,
-                    symbol,
-                )
-
-                if result:
-                    candidates.append(result)
-
-            except Exception as exc:
-                logger.debug(
-                    "Quick scan failed %s: %s",
-                    symbol,
-                    exc,
-                )
-
+                result = self._quick(symbol_key, symbol)
+                if result: candidates.append(result)
+            except Exception: pass
             time.sleep(0.25)
-
-        candidates.sort(
-            key=lambda item: item["score"],
-            reverse=True,
-        )
-
+        candidates.sort(key=lambda item: item["score"], reverse=True)
         selected = candidates[:CFG.scanner_top_n]
-
-        bot_stats["scanner"] = [
-            {
-                "symbol": item["symbol"],
-                "score": round(item["score"], 2),
-            }
-            for item in selected
-        ]
-
+        bot_stats["scanner"] = [{"symbol": item["symbol"], "score": round(item["score"], 2)} for item in selected]
         with active_lock:
             active_symbols.clear()
-
             for item in selected:
                 active_symbols[item["symbol_key"]] = item["symbol"]
-                cm.ensure(
-                    item["symbol_key"],
-                    CFG.timeframes,
-                )
-
+                cm.ensure(item["symbol_key"], CFG.timeframes)
         for item in selected:
             position = get_pos(item["symbol"])
-
-            if position == "ERROR" or position:
-                continue
-
-            threading.Thread(
-                target=self._deep,
-                args=(
-                    item["symbol_key"],
-                    item["symbol"],
-                ),
-                daemon=True,
-            ).start()
-
+            if position == "ERROR" or position: continue
+            threading.Thread(target=self._deep, args=(item["symbol_key"], item["symbol"]), daemon=True).start()
             time.sleep(0.5)
-
     def _quick(self, symbol_key, symbol):
         ticker = exchange_public.fetch_ticker(symbol)
-
-        quote_volume = float(
-            ticker.get("quoteVolume", 0.0)
-            or 0.0
-        )
-
-        if quote_volume < CFG.scanner_min_volume_usdt:
-            return None
-
-        candles = exchange_public.fetch_ohlcv(
-            symbol,
-            timeframe="1h",
-            limit=60,
-        )
-
-        if len(candles) < 30:
-            return None
-
-        highs = [float(item[2]) for item in candles]
-        lows = [float(item[3]) for item in candles]
-        closes = [float(item[4]) for item in candles]
-
-        atr_value = _atr(
-            highs,
-            lows,
-            closes,
-        )
-
-        price = closes[-1]
-
-        if price <= 0:
-            return None
-
+        quote_volume = float(ticker.get("quoteVolume", 0.0) or 0.0)
+        if quote_volume < CFG.scanner_min_volume_usdt: return None
+        candles = exchange_public.fetch_ohlcv(symbol, timeframe="1h", limit=60)
+        if len(candles) < 30: return None
+        highs = [float(item[2]) for item in candles]; lows = [float(item[3]) for item in candles]; closes = [float(item[4]) for item in candles]
+        atr_value = _atr(highs, lows, closes); price = closes[-1]
+        if price <= 0: return None
         atr_pct = atr_value / price * 100.0
-
-        if atr_pct < CFG.scanner_min_atr_pct:
-            return None
-
-        net_move = abs(
-            closes[-1] - closes[-20]
-        )
-
-        path = sum(
-            abs(closes[i] - closes[i - 1])
-            for i in range(
-                max(1, len(closes) - 20),
-                len(closes),
-            )
-        )
-
-        efficiency = (
-            safe_div(net_move, path)
-            if path > 0
-            else 0.0
-        )
-
-        score = (
-            efficiency * 50.0
-            + min(quote_volume / 50_000_000.0, 1.0)
-            * 25.0
-            + min(atr_pct / 1.5, 1.0)
-            * 25.0
-        )
-
-        return {
-            "symbol_key": symbol_key,
-            "symbol": symbol,
-            "score": score,
-            "volume_usdt": quote_volume,
-            "atr_pct": atr_pct,
-        }
-
+        if atr_pct < CFG.scanner_min_atr_pct: return None
+        net_move = abs(closes[-1] - closes[-20])
+        path = sum(abs(closes[i] - closes[i - 1]) for i in range(max(1, len(closes) - 20), len(closes)))
+        efficiency = safe_div(net_move, path) if path > 0 else 0.0
+        score = efficiency * 50.0 + min(quote_volume / 50_000_000.0, 1.0) * 25.0 + min(atr_pct / 1.5, 1.0) * 25.0
+        return {"symbol_key": symbol_key, "symbol": symbol, "score": score, "volume_usdt": quote_volume, "atr_pct": atr_pct}
     def _deep(self, symbol_key, symbol):
         try:
-            if cm.count(
-                symbol_key,
-                CFG.primary_tf,
-            ) < 50:
-                self._load(symbol_key, symbol)
-
-            primary = cm.get(
-                symbol_key,
-                CFG.primary_tf,
-            )
-
-            trend = cm.get(
-                symbol_key,
-                CFG.trend_tf,
-            )
-
-            fast = cm.get(
-                symbol_key,
-                CFG.confirm_tf,
-            )
-
-            if len(primary) < 50:
-                return
-
-            apex = apex_engine.analyze(
-                data_primary=primary,
-                data_trend=trend
-                if len(trend) >= 50
-                else None,
-                data_fast=fast
-                if len(fast) >= 30
-                else None,
-                symbol=symbol,
-                exchange_pub=exchange_public,
-            )
-
-            if not apex:
-                return
-
-            ai = ai_analyst.analyze(
-                symbol,
-                apex,
-            )
-
-            ext_decision = "HOLD"
-            ext_confidence = 0.0
-
-            if (
-                CFG.use_external_strategies
-                and EXTERNAL_AVAILABLE
-            ):
-                adapter_candles = [
-                    {
-                        "open": float(candle[1]),
-                        "high": float(candle[2]),
-                        "low": float(candle[3]),
-                        "close": float(candle[4]),
-                        "volume": float(candle[5]),
-                    }
-                    for candle in primary
-                ]
-
-                signals = [
-                    call_strategy_by_name(
-                        strategy_name,
-                        adapter_candles,
-                    )
-                    for strategy_name
-                    in CFG.external_strategies_list
-                ]
-
-                ext_decision, ext_confidence, _ = (
-                    aggregate_signals(signals)
-                )
-
-                ext_decision = str(
-                    ext_decision
-                ).upper()
-
+            if cm.count(symbol_key, CFG.primary_tf) < 50: self._load(symbol_key, symbol)
+            primary = cm.get(symbol_key, CFG.primary_tf); trend = cm.get(symbol_key, CFG.trend_tf); fast = cm.get(symbol_key, CFG.confirm_tf)
+            if len(primary) < 50: return
+            apex = apex_engine.analyze(data_primary=primary, data_trend=trend if len(trend) >= 50 else None, data_fast=fast if len(fast) >= 30 else None, symbol=symbol, exchange_pub=exchange_public)
+            if not apex: return
+            ai = ai_analyst.analyze(symbol, apex)
+            ext_decision = "HOLD"; ext_confidence = 0.0
+            if CFG.use_external_strategies and EXTERNAL_AVAILABLE:
+                adapter_candles = [{"open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])} for c in primary]
+                signals = [call_strategy_by_name(s, adapter_candles) for s in CFG.external_strategies_list]
+                ext_decision, ext_confidence, _ = aggregate_signals(signals)
+                ext_decision = str(ext_decision).upper()
             final = FinalDecision()
-            final.symbol = symbol
-            final.sl_percent = apex.sl_percent
-            final.tp_percent = apex.tp_percent
-            final.regime = apex.regime.value
-            final.apex_score = apex.confidence
-            final.signal_score = apex.composite_score
-            final.entry_quality = apex.composite_score
-            final.ai_score = ai["confidence"]
-            final.ai_explanation = ai["explanation"]
-
-            if apex.direction == Direction.LONG:
-                final.tf_alignment = apex.bull_modules
-            elif apex.direction == Direction.SHORT:
-                final.tf_alignment = apex.bear_modules
-            else:
-                final.tf_alignment = 0
-
-            final.risk_score = clamp(
-                100.0 - apex.confidence
-            )
-
-            external_veto = (
-                CFG.use_external_strategies
-                and EXTERNAL_AVAILABLE
-                and ext_decision not in ("HOLD", "WAIT")
-                and ext_confidence >= 50.0
-                and apex.decision != Decision.WAIT
-                and ext_decision != apex.decision.value
-            )
-
-            if apex.decision == Decision.WAIT:
-                final.decision = Decision.WAIT
-                final.final_score = apex.confidence
-                final.reasons = [
-                    "APEX WAIT"
-                ] + apex.reasons
-
-            elif external_veto:
-                final.decision = Decision.WAIT
-                final.final_score = apex.confidence
-                final.reasons = [
-                    "EXTERNAL VETO"
-                ] + apex.reasons
-
-            elif (
-                CFG.use_ai_veto
-                and ai["decision"] == "WAIT"
-                and ai["confidence"]
-                >= CFG.ai_min_veto_confidence
-            ):
-                final.decision = Decision.WAIT
-                final.final_score = apex.confidence
-                final.reasons = [
-                    "AI VETO"
-                ] + apex.reasons
-
+            final.symbol = symbol; final.sl_percent = apex.sl_percent; final.tp_percent = apex.tp_percent; final.regime = apex.regime.value
+            final.apex_score = apex.confidence; final.signal_score = apex.composite_score; final.entry_quality = apex.composite_score
+            final.ai_score = ai["confidence"]; final.ai_explanation = ai["explanation"]
+            final.tf_alignment = apex.bull_modules if apex.direction == Direction.LONG else apex.bear_modules if apex.direction == Direction.SHORT else 0
+            final.risk_score = clamp(100.0 - apex.confidence)
+            external_veto = CFG.use_external_strategies and EXTERNAL_AVAILABLE and ext_decision not in ("HOLD", "WAIT") and ext_confidence >= 50.0 and apex.decision != Decision.WAIT and ext_decision != apex.decision.value
+            if apex.decision == Decision.WAIT: final.decision = Decision.WAIT; final.final_score = apex.confidence; final.reasons = ["APEX WAIT"] + apex.reasons
+            elif external_veto: final.decision = Decision.WAIT; final.final_score = apex.confidence; final.reasons = ["EXTERNAL VETO"] + apex.reasons
+            elif CFG.use_ai_veto and ai["decision"] == "WAIT" and ai["confidence"] >= CFG.ai_min_veto_confidence: final.decision = Decision.WAIT; final.final_score = apex.confidence; final.reasons = ["AI VETO"] + apex.reasons
             else:
                 final.decision = apex.decision
-
-                # MODIFIED: تطبيع الأوزان إذا كان AI أو external غير متاح.
-                score_sum = apex.confidence * 0.75
-                weight_sum = 0.75
-
-                if (
-                    CFG.use_ai_explainer
-                    and not ai["error"]
-                ):
-                    score_sum += ai["confidence"] * 0.15
-                    weight_sum += 0.15
-
-                if (
-                    CFG.use_external_strategies
-                    and EXTERNAL_AVAILABLE
-                ):
-                    score_sum += ext_confidence * 0.10
-                    weight_sum += 0.10
-
-                final.final_score = safe_div(
-                    score_sum,
-                    weight_sum,
-                    apex.confidence,
-                )
-
-                final.reasons = [
-                    (
-                        f"APEX={apex.decision.value} "
-                        f"AI={ai['decision']} "
-                        f"EXT={ext_decision}"
-                    )
-                ] + apex.reasons
-
-            bot_stats["last_analysis"][symbol] = {
-                "decision": final.decision.value,
-                "score": round(final.final_score, 2),
-                "entry_quality": round(
-                    final.entry_quality,
-                    2,
-                ),
-                "regime": final.regime,
-                "tf_align": final.tf_alignment,
-                "slot": "-",
-                "time": datetime.now(
-                    timezone.utc
-                ).isoformat(),
-            }
-
-            if final.decision == Decision.WAIT:
-                return
-
-            if final.final_score < CFG.min_confidence:
-                return
-
-            opp_pool.add_or_update(
-                symbol,
-                final,
-                apex,
-            )
-
+                score_sum = apex.confidence * 0.75; weight_sum = 0.75
+                if CFG.use_ai_explainer and not ai["error"]: score_sum += ai["confidence"] * 0.15; weight_sum += 0.15
+                if CFG.use_external_strategies and EXTERNAL_AVAILABLE: score_sum += ext_confidence * 0.10; weight_sum += 0.10
+                final.final_score = safe_div(score_sum, weight_sum, apex.confidence)
+                final.reasons = [f"APEX={apex.decision.value} AI={ai['decision']} EXT={ext_decision}"] + apex.reasons
+            bot_stats["last_analysis"][symbol] = {"decision": final.decision.value, "score": round(final.final_score, 2), "entry_quality": round(final.entry_quality, 2), "regime": final.regime, "tf_align": final.tf_alignment, "slot": "-", "time": datetime.now(timezone.utc).isoformat()}
+            if final.decision == Decision.WAIT: return
+            if final.final_score < CFG.min_confidence: return
+            opp_pool.add_or_update(symbol, final, apex)
             best = opp_pool.get_best_opportunity()
-
-            if not best:
-                return
-
-            slot_info = get_slot_configuration(
-                best["final"]
-            )
-
-            if slot_info:
-                bot_stats["last_analysis"][
-                    best["symbol"]
-                ]["slot"] = slot_info["slot"]
-
-            if live_open_position_count() >= CFG.max_open_positions:
-                return
-
-            success = execute_trade(
-                best["symbol"],
-                best["final"],
-            )
-
-            if success:
-                opp_pool.remove(best["symbol"])
-            else:
-                # لا نحاول تنفيذ المرشح الضعيف مرة أخرى في نفس الدورة.
-                opp_pool.remove(best["symbol"])
-
-        except Exception as exc:
-            logger.error(
-                "Deep analysis failed %s: %s",
-                symbol,
-                exc,
-                exc_info=True,
-            )
-
+            if not best: return
+            slot_info = get_slot_configuration(best["final"])
+            if slot_info: bot_stats["last_analysis"][best["symbol"]]["slot"] = slot_info["slot"]
+            if live_open_position_count() >= CFG.max_open_positions: return
+            success = execute_trade(best["symbol"], best["final"])
+            if success: opp_pool.remove(best["symbol"])
+            else: opp_pool.remove(best["symbol"])
+        except Exception as exc: logger.error("Deep analysis failed %s: %s", symbol, exc, exc_info=True)
     def _load(self, symbol_key, symbol):
         for timeframe in CFG.timeframes:
             try:
-                candles = exchange_public.fetch_ohlcv(
-                    symbol,
-                    timeframe=timeframe,
-                    limit=300,
-                )
-
-                cm.load(
-                    symbol_key,
-                    timeframe,
-                    candles,
-                )
-
-            except Exception as exc:
-                logger.warning(
-                    "Load failed %s %s: %s",
-                    symbol,
-                    timeframe,
-                    exc,
-                )
-
+                candles = exchange_public.fetch_ohlcv(symbol, timeframe=timeframe, limit=300)
+                cm.load(symbol_key, timeframe, candles)
+            except Exception as exc: logger.warning("Load failed %s %s: %s", symbol, timeframe, exc)
             time.sleep(0.25)
 
 
 async def ws_worker():
     delay = CFG.ws_reconnect_delay
-
     while True:
-        with active_lock:
-            current_symbols = dict(active_symbols)
-
-        if not current_symbols:
-            await asyncio.sleep(10)
-            continue
-
-        streams = [
-            f"{symbol_key}@kline_{timeframe}"
-            for symbol_key in current_symbols
-            for timeframe in CFG.timeframes
-        ]
-
-        url = (
-            "wss://fstream.binance.com/stream?streams="
-            + "/".join(streams)
-        )
-
+        with active_lock: current_symbols = dict(active_symbols)
+        if not current_symbols: await asyncio.sleep(10); continue
+        streams = [f"{sk}@kline_{tf}" for sk in current_symbols for tf in CFG.timeframes]
+        url = "wss://fstream.binance.com/stream?streams=" + "/".join(streams)
         try:
-            async with websockets.connect(
-                url,
-                ping_interval=CFG.ws_ping_interval,
-                ping_timeout=CFG.ws_ping_timeout,
-            ) as websocket:
-                logger.info(
-                    "WebSocket connected: %s symbols",
-                    len(current_symbols),
-                )
-
+            async with websockets.connect(url, ping_interval=CFG.ws_ping_interval, ping_timeout=CFG.ws_ping_timeout) as websocket:
+                logger.info("WebSocket connected: %s symbols", len(current_symbols))
                 delay = CFG.ws_reconnect_delay
-
                 async for message in websocket:
-                    payload = json.loads(message)
-                    kline = payload.get("data", {}).get("k")
-
-                    if not kline:
-                        continue
-
-                    symbol_key = kline["s"].lower()
-                    timeframe = kline["i"]
-
-                    candle = [
-                        kline["t"],
-                        float(kline["o"]),
-                        float(kline["h"]),
-                        float(kline["l"]),
-                        float(kline["c"]),
-                        float(kline["v"]),
-                    ]
-
-                    cm.update(
-                        symbol_key,
-                        timeframe,
-                        candle,
-                        bool(kline["x"]),
-                    )
-
-        except Exception as exc:
-            logger.error(
-                "WebSocket error: %s",
-                exc,
-            )
-
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, 120)
+                    payload = json.loads(message); kline = payload.get("data", {}).get("k")
+                    if not kline: continue
+                    symbol_key = kline["s"].lower(); timeframe = kline["i"]
+                    candle = [kline["t"], float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"]), float(kline["v"])]
+                    cm.update(symbol_key, timeframe, candle, bool(kline["x"]))
+        except Exception as exc: logger.error("WebSocket error: %s", exc)
+        await asyncio.sleep(delay); delay = min(delay * 2, 120)
 
 
 def main():
-    logger.info(
-        "APEX v3.1 AMF starting | mode=%s | max_positions=%s",
-        "DRY_RUN" if CFG.dry_run else "LIVE",
-        CFG.max_open_positions,
-    )
+    # ══════════════════════════════════════════════════════════
+    # ✅ كشف IP الخارجي (Railway / VPS) وإضافته للـ Whitelist
+    # ══════════════════════════════════════════════════════════
+    try:
+        _ip = requests.get("https://api.ipify.org", timeout=10).text
+        bot_stats["current_ip"] = _ip
+        logger.info("=" * 60)
+        logger.info(f"🌍 Railway Public IP: {_ip}")
+        logger.info("   ⬆️ أضف هذا الـ IP في Binance API → IP Whitelist")
+        logger.info("=" * 60)
+    except Exception as e:
+        logger.warning(f"⚠️ Cannot detect public IP: {e}")
+        bot_stats["current_ip"] = "UNKNOWN"
+    # ══════════════════════════════════════════════════════════
 
-    threading.Thread(
-        target=run_server,
-        daemon=True,
-    ).start()
+    logger.info("APEX v3.1 AMF starting | mode=%s | max_positions=%s", "DRY_RUN" if CFG.dry_run else "LIVE", CFG.max_open_positions)
 
+    threading.Thread(target=run_server, daemon=True).start()
     time.sleep(2)
 
     try:
-        ticker = exchange_public.fetch_ticker(
-            "BTC/USDT:USDT"
-        )
-
-        logger.info(
-            "Binance public API OK | BTC=%s",
-            ticker.get("last"),
-        )
-
+        ticker = exchange_public.fetch_ticker("BTC/USDT:USDT")
+        logger.info("Binance public API OK | BTC=%s", ticker.get("last"))
     except Exception as exc:
-        logger.critical(
-            "Binance connection failed: %s",
-            exc,
-        )
+        logger.critical("Binance connection failed: %s", exc)
         return
 
     logger.info("Loading historical candles...")
-
     for symbol_key, symbol in CFG.watchlist.items():
-        cm.ensure(
-            symbol_key,
-            CFG.timeframes,
-        )
-
+        cm.ensure(symbol_key, CFG.timeframes)
         for timeframe in CFG.timeframes:
             try:
-                candles = exchange_public.fetch_ohlcv(
-                    symbol,
-                    timeframe=timeframe,
-                    limit=300,
-                )
-
-                cm.load(
-                    symbol_key,
-                    timeframe,
-                    candles,
-                )
-
-            except Exception as exc:
-                logger.warning(
-                    "Historical load failed %s %s: %s",
-                    symbol,
-                    timeframe,
-                    exc,
-                )
-
+                candles = exchange_public.fetch_ohlcv(symbol, timeframe=timeframe, limit=300)
+                cm.load(symbol_key, timeframe, candles)
+            except Exception as exc: logger.warning("Historical load failed %s %s: %s", symbol, timeframe, exc)
             time.sleep(0.20)
 
-    monitor = PositionMonitor(
-        exchange,
-        db,
-        CFG,
-    )
-    monitor.start()
-
-    scanner = MarketScanner()
-    scanner.start()
-
+    monitor = PositionMonitor(exchange, db, CFG); monitor.start()
+    scanner = MarketScanner(); scanner.start()
     bot_stats["status"] = "RUNNING"
 
-    try:
-        asyncio.run(ws_worker())
-
+    try: asyncio.run(ws_worker())
     except KeyboardInterrupt:
-        logger.info("Shutdown requested")
-        scanner.stop()
-        monitor.stop()
+        logger.info("Shutdown requested"); scanner.stop(); monitor.stop()
 
 
 if __name__ == "__main__":
