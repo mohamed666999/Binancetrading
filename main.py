@@ -2940,7 +2940,7 @@ active_lock = threading.Lock()
 
 
 class OpportunityPool:
-    def __init__(self, max_size=5, ttl_seconds=300):
+    def __init__(self, max_size=5, ttl_seconds=600):  # MODIFIED: زيادة ttl إلى 600 ثانية
         self.pool = []
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
@@ -2992,21 +2992,19 @@ class OpportunityPool:
     def get_best_opportunity(self):
         with self.lock:
             now = time.time()
-
+            # إزالة الفرص منتهية الصلاحية
             self.pool = [
                 item
                 for item in self.pool
                 if now - item["timestamp"] < self.ttl_seconds
             ]
-
             if not self.pool:
                 return None
-
             self.pool.sort(
                 key=lambda item: item["opp_score"],
                 reverse=True,
             )
-
+            # إرجاع أفضل فرصة دون إزالتها
             return self.pool[0]
 
     def remove(self, symbol):
@@ -3020,7 +3018,7 @@ class OpportunityPool:
 
 opp_pool = OpportunityPool(
     max_size=5,
-    ttl_seconds=300,
+    ttl_seconds=600,  # MODIFIED: زيادة مدة الاحتفاظ بالفرص
 )
 
 
@@ -4035,33 +4033,26 @@ class MarketScanner:
                 apex,
             )
 
-            best = opp_pool.get_best_opportunity()
+            # MODIFIED: محاولة تنفيذ الفرص بالترتيب حتى النجاح
+            while True:
+                best = opp_pool.get_best_opportunity()
+                if best is None:
+                    break
 
-            if not best:
-                return
+                slot_info = get_slot_configuration(best["final"])
+                if slot_info:
+                    bot_stats["last_analysis"][best["symbol"]]["slot"] = slot_info["slot"]
 
-            slot_info = get_slot_configuration(
-                best["final"]
-            )
+                if live_open_position_count() >= CFG.max_open_positions:
+                    # لا يمكن فتح صفقات جديدة بسبب الحد الأقصى، نخرج من الحلقة
+                    break
 
-            if slot_info:
-                bot_stats["last_analysis"][
-                    best["symbol"]
-                ]["slot"] = slot_info["slot"]
-
-            if live_open_position_count() >= CFG.max_open_positions:
-                return
-
-            success = execute_trade(
-                best["symbol"],
-                best["final"],
-            )
-
-            if success:
-                opp_pool.remove(best["symbol"])
-            else:
-                # لا نحاول تنفيذ المرشح الضعيف مرة أخرى في نفس الدورة.
-                opp_pool.remove(best["symbol"])
+                ok = execute_trade(best["symbol"], best["final"])
+                opp_pool.remove(best["symbol"])  # إزالة الفرصة بعد المحاولة
+                if ok:
+                    # نجحت الصفقة، نخرج من الحلقة
+                    break
+                # إذا فشلت، نستمر للفرصة التالية
 
         except Exception as exc:
             logger.error(
