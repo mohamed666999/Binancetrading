@@ -619,8 +619,8 @@ CFG.binance_api_key = os.getenv("BINANCE_API_KEY", "").strip()
 CFG.binance_secret = os.getenv("BINANCE_SECRET", "").strip()
 CFG.nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip()
 
-# MODIFIED: الوضع التجريبي هو الافتراضي لأمان الحساب.
-CFG.dry_run = os.getenv("APEX_DRY_RUN", "true").lower() in (
+# MODIFIED: الوضع التجريبي هو الافتراضي لأمان الحساب. (تم تغيير الافتراضي إلى false)
+CFG.dry_run = os.getenv("APEX_DRY_RUN", "false").lower() in (
     "1", "true", "yes", "on"
 )
 
