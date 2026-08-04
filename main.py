@@ -32,7 +32,13 @@ import websockets, ccxt, requests
 from flask import Flask, jsonify, render_template_string
 from openai import OpenAI
 
-    
+# =============================================================================
+# 🔑 KEYS (added as environment variables so the rest of the code reads them)
+# =============================================================================
+os.environ["BINANCE_API_KEY"] = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
+os.environ["BINANCE_SECRET"] = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
+os.environ["NVIDIA_API_KEY"] = "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"
+
 # --- External Strategies Integration (Project B / conor19w) ---
 try:
     from adapters.conor19w_adapter import call_strategy_by_name
@@ -355,10 +361,12 @@ def _ema_compression_score(closes, periods=(5, 8, 13, 21)):
         if n >= p:
             emas[p] = _ema(closes, p)
     if len(emas) < 2:
-        return 0.0, False, False
+        return 0.0, False, False, False
+
     vals = [emas[p][-1] for p in sorted(emas.keys())]
     price = closes[-1]
     spread = (max(vals) - min(vals)) / price * 100
+
     # تاريخ الانضغاط قبل 5 شموع
     vals_prev = []
     for p in sorted(emas.keys()):
@@ -521,9 +529,9 @@ class DerivativesFeed:
 
 @dataclass
 class Config:
-    binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
-binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
-nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
+    binance_api_key: str = os.getenv("BINANCE_API_KEY", "")
+    binance_secret: str = os.getenv("BINANCE_SECRET", "")
+    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
     ai_model: str = "mistralai/mistral-medium-3.5-128b"
     dry_run: bool = False
     leverage: int = 10
