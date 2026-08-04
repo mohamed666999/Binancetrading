@@ -37,7 +37,7 @@ from openai import OpenAI
 # =============================================================================
 os.environ["BINANCE_API_KEY"] = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
 os.environ["BINANCE_SECRET"] = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
-os.environ["NVIDIA_API_KEY"] = "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"
+os.environ["NVIDIA_API_KEY"] = "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"
 
 # --- External Strategies Integration (Project B / conor19w) ---
 try:
@@ -532,7 +532,7 @@ class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "")
     binance_secret: str = os.getenv("BINANCE_SECRET", "")
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
-    ai_model: str = "mistralai/mistral-medium-3.5-128b"
+    ai_model: str = "openai/gpt-oss-120b"  # MODIFIED: تم تغيير الموديل إلى gpt-oss-120b
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
@@ -2739,6 +2739,13 @@ def get_slot_configuration(final):
 
 
 class AIAnalyst:
+    # MODIFIED: استخدام عميل OpenAI مع base_url الخاص بـ NVIDIA
+    def __init__(self):
+        self.client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=CFG.nvidia_api_key,
+        )
+
     def analyze(self, symbol, apex_output):
         result = {
             "decision": "WAIT",
@@ -2781,40 +2788,25 @@ Return JSON only:
 """
 
         try:
-            response = requests.post(
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers={
-                    "Authorization": (
-                        f"Bearer {CFG.nvidia_api_key}"
-                    ),
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": CFG.ai_model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Return valid JSON only. "
-                                "Be conservative."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        },
-                    ],
-                    "max_tokens": 2048,
-                    "temperature": 0.2,
-                    "stream": False,
-                },
-                timeout=60,
+            completion = self.client.chat.completions.create(
+                model=CFG.ai_model,  # "openai/gpt-oss-120b"
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Return valid JSON only. Be conservative.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                temperature=0.2,
+                top_p=1,
+                max_tokens=2048,
+                stream=False,
             )
 
-            response.raise_for_status()
-            payload = response.json()
-            raw = payload["choices"][0]["message"]["content"]
+            raw = completion.choices[0].message.content
             raw = raw.strip()
 
             if raw.startswith("```"):
