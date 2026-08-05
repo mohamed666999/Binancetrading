@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║     APEX TRADING BOT v3.0 — Multi-Layer Signal Fusion        ║
+║  APEX TRADING BOT v3.0 + ISS Quantum + OpportunityPool Fix  ║
+║  Date: 2026-08-05                                           ║
 ║                                                              ║
 ║  Architecture:                                               ║
 ║  • Layer 1: 9 Independent Signal Modules (APEX Classic)      ║
@@ -12,8 +13,14 @@
 ║  • Layer 6: Multi-Timeframe Alignment                        ║
 ║  • Layer 7: AI Veto / Explainer (15% weight)                 ║
 ║  • Layer 8: External Strategies Veto (conor19w)              ║
+║  • Layer 9: ISS Quantum (Information Spacetime Singularity)  ║
 ║                                                              ║
-║  Merged from: APEX v1 + MSSI v2 + APEX v3 Technical Layer    ║
+║  OpportunityPool Fixes:                                      ║
+║  ✅ 1- لا تحذف الفرصة عند مجرد اختيارها                      ║
+║  ✅ 2- دالة remove للحذف عند نجاح التنفيذ                    ║
+║  ✅ 3- مدة الاحتفاظ 300 ثانية                               ║
+║  ✅ 4- لا تضيع الفرصة إذا فشل التنفيذ                        ║
+║  ✅ 5- إذا فشلت الأولى جرّب الثانية (while loop)             ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -252,6 +259,43 @@ def _ichimoku(highs, lows, closes):
     return {"above_cloud": above_cloud, "bullish_cloud": bullish_cloud, "tk_cross": tk_cross, "tenkan": tenkan, "kijun": kijun, "senkou_a": senkou_a, "senkou_b": senkou_b}
 
 
+# ══════════════════════════════════════════════════════════════
+# ✅ دوال مساعدة لموديول ISS (بدون numpy/scipy — math فقط)
+# ══════════════════════════════════════════════════════════════
+def _entropy_manual(values):
+    if not values:
+        return 0.0
+    min_v = min(values)
+    max_v = max(values)
+    range_v = max_v - min_v
+    if range_v < 1e-12:
+        return 0.0
+    bins = 10
+    counts = [0] * bins
+    for v in values:
+        idx = int((v - min_v) / range_v * bins)
+        idx = min(idx, bins - 1)
+        counts[idx] += 1
+    total = len(values)
+    ent = 0.0
+    for c in counts:
+        if c > 0:
+            p = c / total
+            ent -= p * math.log(p + 1e-10)
+    return ent
+
+def _gradient_manual(values):
+    n = len(values)
+    if n < 2:
+        return [0.0]
+    grad = [0.0] * n
+    grad[0] = values[1] - values[0]
+    grad[-1] = values[-1] - values[-2]
+    for i in range(1, n - 1):
+        grad[i] = (values[i + 1] - values[i - 1]) / 2.0
+    return grad
+
+
 class DerivativesFeed:
     def __init__(self, ttl=90):
         self._cache = {}
@@ -407,9 +451,6 @@ class Config:
     dry_run: bool = False
     leverage: int = 10
     risk_per_trade_pct: float = 3.0
-    # ══════════════════════════════════════════════════════════
-    # ✅ إعدادات المستويات الأربعة الهرمية (Tier System)
-    # ══════════════════════════════════════════════════════════
     tier_levels_enabled: bool = True
     trailing_enabled: bool = True
     trailing_activation: float = 80.0
@@ -422,9 +463,6 @@ class Config:
     min_rr_ratio: float = 2.0
     max_daily_loss_pct: float = 4.0
     max_consecutive_losses: int = 4
-    # ══════════════════════════════════════════════════════════
-    # ✅ تخفيف الفلاتر قليلاً لزيادة الفرص المتاحة
-    # ══════════════════════════════════════════════════════════
     min_signal_score: float = 52.0
     min_confidence: float = 45.0
     min_module_agreement: int = 3
@@ -458,9 +496,6 @@ class Config:
         "dotusdt": "DOT/USDT:USDT", "ltcusdt": "LTC/USDT:USDT", "aptusdt": "APT/USDT:USDT",
         "opusdt": "OP/USDT:USDT", "jupusdt": "JUP/USDT:USDT", "tiausdt": "TIA/USDT:USDT",
     })
-    # ══════════════════════════════════════════════════════════
-    # ✅ قاعدة بيانات جديدة نظيفة (للتخلص من الصفقات الوهمية القديمة)
-    # ══════════════════════════════════════════════════════════
     db_path: str = "apex_trades_v2.db"
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
@@ -574,8 +609,10 @@ class FinalDecision:
 
 class APEXEngine:
     BASE_WEIGHTS = {
-        "trend": 0.18, "momentum": 0.15, "volume": 0.12, "structure": 0.12,
-        "candle": 0.08, "deriv": 0.15, "ichimoku": 0.08, "sr_levels": 0.07, "volatility": 0.05,
+        "trend": 0.15, "momentum": 0.12, "volume": 0.10, "structure": 0.10,
+        "candle": 0.07, "deriv": 0.12, "ichimoku": 0.07, "sr_levels": 0.06,
+        "volatility": 0.04,
+        "iss_quantum": 0.17,
     }
 
     def analyze(self, data_primary, data_trend=None, data_fast=None, symbol=None, exchange_pub=None):
@@ -603,6 +640,7 @@ class APEXEngine:
             self._module_candle(primary), self._module_deriv(primary, deriv_data),
             self._module_ichimoku(primary), self._module_sr_levels(primary),
             self._module_volatility(primary),
+            self._module_ethereal_iss(primary),
         ]
         out.module_signals = signals
         out.total_modules = len(signals)
@@ -948,6 +986,45 @@ class APEXEngine:
         return ModuleSignal(name="volatility", score=score, confidence=confidence, direction=direction,
                             details={"atr_pct": atr_pct, "bw": bw, "pct_b": pct_b, "hv": hv, "vol_regime": vol_regime})
 
+    # ══════════════════════════════════════════════════════════
+    # ✅ Supreme Module: ISS (Information Spacetime Singularity)
+    #    بدون numpy/scipy — يستخدم math فقط
+    # ══════════════════════════════════════════════════════════
+    def _module_ethereal_iss(self, d):
+        closes = d.closes
+
+        if len(closes) < 30:
+            return ModuleSignal("iss_quantum", 50, 10, Direction.NEUTRAL)
+
+        # 1. حساب الإنتروبيا (العشوائية المعلوماتية) يدوياً
+        price_changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        market_entropy = _entropy_manual(price_changes)
+
+        # 2. رصد "التفرد" (Singularity)
+        std_dev = _std(closes[-14:])
+        suffocation_factor = market_entropy / (std_dev + 1e-10)
+
+        # 3. تحديد "انهيار الاحتمالات" (Probability Collapse)
+        recent_flux = _gradient_manual(closes[-5:])
+        bias = _mean(recent_flux)
+
+        # تحويل القيمة لسكور (0-100)
+        score = 50 + (bias / (closes[-1] * 0.001)) * 10
+        score = clamp(score, 0, 100)
+
+        # الثقة تزداد عندما نصل لحالة "التفرد"
+        confidence = clamp(suffocation_factor * 20, 30, 98)
+
+        direction = Direction.LONG if score > 55 else (Direction.SHORT if score < 45 else Direction.NEUTRAL)
+
+        return ModuleSignal(
+            name="iss_quantum",
+            score=score,
+            confidence=confidence,
+            direction=direction,
+            details={"entropy": market_entropy, "singularity": suffocation_factor}
+        )
+
     def _detect_regime(self, d, deriv_data):
         closes = d.closes
         if len(closes) < 30: return Regime.RANGING
@@ -973,13 +1050,13 @@ class APEXEngine:
     def _adaptive_weights(self, regime):
         w = dict(self.BASE_WEIGHTS)
         if regime in (Regime.TRENDING_UP, Regime.TRENDING_DOWN):
-            w["trend"] = 0.25; w["momentum"] = 0.18; w["ichimoku"] = 0.12; w["sr_levels"] = 0.05
+            w["trend"] = 0.20; w["momentum"] = 0.14; w["ichimoku"] = 0.10; w["sr_levels"] = 0.04; w["iss_quantum"] = 0.14
         elif regime in (Regime.BREAKOUT_UP, Regime.BREAKOUT_DOWN):
-            w["volume"] = 0.20; w["volatility"] = 0.12; w["momentum"] = 0.18; w["deriv"] = 0.18
+            w["volume"] = 0.16; w["volatility"] = 0.10; w["momentum"] = 0.14; w["deriv"] = 0.14; w["iss_quantum"] = 0.20
         elif regime in (Regime.REVERSAL_UP, Regime.REVERSAL_DOWN):
-            w["candle"] = 0.18; w["momentum"] = 0.20; w["sr_levels"] = 0.15; w["deriv"] = 0.18
+            w["candle"] = 0.14; w["momentum"] = 0.16; w["sr_levels"] = 0.12; w["deriv"] = 0.14; w["iss_quantum"] = 0.18
         elif regime == Regime.HIGH_VOLATILITY:
-            w["deriv"] = 0.22; w["volatility"] = 0.08; w["trend"] = 0.12
+            w["deriv"] = 0.18; w["volatility"] = 0.06; w["trend"] = 0.10; w["iss_quantum"] = 0.20
         total = sum(w.values())
         return {k: v / total for k, v in w.items()}
 
@@ -1257,7 +1334,7 @@ class PositionMonitor:
 
 app = Flask(__name__)
 bot_stats = {
-    "status": "STARTING", "version": "APEX-v3.0-Fusion", "uptime": 0,
+    "status": "STARTING", "version": "APEX-v3.0-ISS-OPP-FIX", "uptime": 0,
     "trades_today": 0, "open_positions": 0, "scanner": [],
     "last_analysis": {}, "mode": "DRY_RUN" if CFG.dry_run else "LIVE",
     "current_ip": "", "performance": {}
@@ -1293,7 +1370,7 @@ def home():
 </style>
 </head>
 <body>
-<h1>APEX TRADING ENGINE v3.0 Fusion</h1>
+<h1>APEX TRADING ENGINE v3.0 + ISS + OPP FIX</h1>
 <div>
   <span class="stat">Mode: <b>{bot_stats['mode']}</b></span>
   <span class="stat">IP: {bot_stats['current_ip']}</span>
@@ -1575,6 +1652,7 @@ class OpportunityPool:
             self.pool = [x for x in self.pool if x["symbol"] != symbol]
 
 
+# ✅ التعديل 3: مدة الاحتفاظ 300 ثانية
 opp_pool = OpportunityPool(max_size=5, ttl_seconds=300)
 
 
@@ -1765,7 +1843,6 @@ class MarketScanner:
         # ══════════════════════════════════════════════════════════
         # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool)
         # ══════════════════════════════════════════════════════════
-        # فحص ما إذا كانت الفرصة "استثنائية" لتجاوز الانتظار والدخول الفوري
         is_explosive_sniper = (final.final_score >= 96.0 and apex.confidence >= 97.0)
 
         if is_explosive_sniper:
@@ -1773,7 +1850,6 @@ class MarketScanner:
             execute_trade(sym, final)
             return
 
-        # خلاف ذلك، أضفها إلى حوض التجميع التنافسي (Opportunity Pool)
         opp_pool.add_or_update(sym, final, apex)
 
         # ══════════════════════════════════════════════════════════
@@ -1880,7 +1956,6 @@ def execute_trade(sym, final):
         try:
             st["executing"] = True
 
-            # تتبع أسباب الرفض بذكاء دون إيقاف التنفيذ العشوائي
             reasons = []
 
             current_pos = get_pos(sym)
@@ -1899,12 +1974,10 @@ def execute_trade(sym, final):
             if db.consecutive_losses() >= CFG.max_consecutive_losses:
                 reasons.append("MAX_CONSECUTIVE_LOSSES_REACHED")
 
-            # إذا وجدت أسباب منع حقيقية (مثل وجود صفقة مفتوحة فعلياً)، نتوقف هنا
             if "POSITION_ALREADY_OPEN" in reasons or "MAX_DAILY_LOSS_REACHED" in reasons:
                 logger.warning(f"❌ NO TRADE [{sym}] | Reason Codes: {' | '.join(reasons)}")
                 return False
 
-            # إذا كانت أسباب عادية (مثل طلبات معلقة)، نقوم بتنظيفها ومتابعة الصفقة بشكل طبيعي!
             if "MANUAL_PENDING_ORDER" in reasons:
                 logger.info(f"🧹 تنظيف طلبات معلقة لـ {sym} لمتابعة تنفيذ الصفقة...")
                 try:
@@ -1921,24 +1994,17 @@ def execute_trade(sym, final):
             sl_price = price * (1 - final.sl_percent / 100) if side == "buy" else price * (1 + final.sl_percent / 100)
             tp_price = price * (1 + final.tp_percent / 100) if side == "buy" else price * (1 - final.tp_percent / 100)
 
-            # ══════════════════════════════════════════════════════════
-            # ✅ منطق الإجماع متعدد الطبقات وتحديد المستوى الهرمي (Tier)
-            # ══════════════════════════════════════════════════════════
             agreement_score = final.final_score
             consensus_boost = 0
 
-            # 1. فحص الإجماع (إذا كانت الثقة عالية جداً والذكاء الاصطناعي متوافق)
             if final.apex_score >= 80 and final.ai_score >= 80:
                 consensus_boost += 15
 
-            # 2. فحص توافق الفلاتر الخارجية أو الموديولات
             if final.tf_alignment >= 7:
                 consensus_boost += 10
 
-            # حساب السكور النهائي بعد الإجماع
             net_score = agreement_score + consensus_boost
 
-            # تحديد المستويات الأربعة بناءً على الإجماع الحقيقي
             if CFG.tier_levels_enabled:
                 if net_score >= 90.0 and final.tf_alignment >= 8:
                     tier = 4
@@ -1968,13 +2034,11 @@ def execute_trade(sym, final):
             if balance <= 0:
                 return False
 
-            # حساب الحجم بناءً على مضاعف المخاطرة للمستوى الهرمي
             base_risk = CFG.risk_per_trade_pct * risk_multiplier
             qty = (balance * base_risk / 100) / abs(price - sl_price) if abs(price - sl_price) > 0 else 0.0
             qty = float(exchange.amount_to_precision(sym, qty))
             if qty <= 0:
                 return False
-            # ══════════════════════════════════════════════════════════
 
             if CFG.dry_run:
                 st["t"] = time.time()
@@ -1982,7 +2046,6 @@ def execute_trade(sym, final):
                 logger.info(f"✅ DRY RUN Trade Executed for {sym} | TIER {tier}")
                 return True
 
-            # تطبيق الرافعة المخصصة للمستوى الهرمي على بينانس
             try:
                 exchange.set_leverage(applied_leverage, sym)
             except Exception:
@@ -2087,7 +2150,7 @@ async def ws_worker():
 def main():
     ip = show_deploy_ip()
     logger.info("=" * 60)
-    logger.info("APEX TRADING BOT v3.0 — Multi-Layer Fusion")
+    logger.info("APEX TRADING BOT v3.0 — Multi-Layer Fusion + ISS Quantum + OPP FIX")
     logger.info(f"   IP: {ip}")
     logger.info(f"   Mode: {'DRY_RUN 📝' if CFG.dry_run else 'LIVE 🚀'}")
     logger.info(f"   Scanner every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
@@ -2096,12 +2159,13 @@ def main():
     logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
     logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
     logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
+    logger.info(f"   ISS Quantum Module: ENABLED 🌌 (weight=0.17, pure math)")
     logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=300s, Explosive≥96)")
     logger.info(f"   Live Position Check: ENABLED 🔄 (فحص مباشر من بينانس)")
     logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
     logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
     logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
-    logger.info(f"   DB: {CFG.db_path} (جديدة نظيفة ✨)")
+    logger.info(f"   DB: {CFG.db_path}")
     logger.info("=" * 60)
     threading.Thread(target=run_server, daemon=True).start()
     time.sleep(2)
