@@ -1,26 +1,9 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║  APEX TRADING BOT v3.0 + ISS Quantum + OpportunityPool Fix  ║
-║  Date: 2026-08-05                                           ║
-║                                                              ║
-║  Architecture:                                               ║
-║  • Layer 1: 9 Independent Signal Modules (APEX Classic)      ║
-║  • Layer 2: Technical Indicators Engine (RSI/MACD/EMA/BB)    ║
-║  • Layer 3: Market Structure (S/R, Volume Profile, HH/HL)    ║
-║  • Layer 4: Derivatives Intelligence (OI/Funding/LSR/Flow)   ║
-║  • Layer 5: Regime Classifier (9 regimes, adaptive weights)  ║
-║  • Layer 6: Multi-Timeframe Alignment                        ║
-║  • Layer 7: AI Veto / Explainer (15% weight)                 ║
-║  • Layer 8: External Strategies Veto (conor19w)              ║
-║  • Layer 9: ISS Quantum (Information Spacetime Singularity)  ║
-║                                                              ║
-║  OpportunityPool Fixes:                                      ║
-║  ✅ 1- لا تحذف الفرصة عند مجرد اختيارها                      ║
-║  ✅ 2- دالة remove للحذف عند نجاح التنفيذ                    ║
-║  ✅ 3- مدة الاحتفاظ 300 ثانية                               ║
-║  ✅ 4- لا تضيع الفرصة إذا فشل التنفيذ                        ║
-║  ✅ 5- إذا فشلت الأولى جرّب الثانية (while loop)             ║
+║     APEX TRADING BOT v3.1 — ISS Singularity + 5-Slots      ║
+║  Architecture: 9 Classic Modules + ISS Quantum Override     ║
+║  Slots: 1-2 (x5) | 3-4 (x15) | 5 (x20 SNIPER)             ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -30,9 +13,24 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import websockets, ccxt, requests
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify
 from openai import OpenAI
+
+# =============================================================================
+# 🔑 KEYS (Environment Variables - Use .env for production!)
+# =============================================================================
+os.environ["BINANCE_API_KEY"] = "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4"
+os.environ["BINANCE_SECRET"] = "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU"
+os.environ["NVIDIA_API_KEY"] = "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"
+os.environ["NVIDIA_API_KEY_OSS"] = "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"
+
+# =============================================================================
+# 🔬 REQUIRED LIBRARIES (Install: pip install numpy scipy)
+# =============================================================================
+import numpy as np
+from scipy.stats import entropy
 
 # --- External Strategies Integration (Project B / conor19w) ---
 try:
@@ -259,43 +257,6 @@ def _ichimoku(highs, lows, closes):
     return {"above_cloud": above_cloud, "bullish_cloud": bullish_cloud, "tk_cross": tk_cross, "tenkan": tenkan, "kijun": kijun, "senkou_a": senkou_a, "senkou_b": senkou_b}
 
 
-# ══════════════════════════════════════════════════════════════
-# ✅ دوال مساعدة لموديول ISS (بدون numpy/scipy — math فقط)
-# ══════════════════════════════════════════════════════════════
-def _entropy_manual(values):
-    if not values:
-        return 0.0
-    min_v = min(values)
-    max_v = max(values)
-    range_v = max_v - min_v
-    if range_v < 1e-12:
-        return 0.0
-    bins = 10
-    counts = [0] * bins
-    for v in values:
-        idx = int((v - min_v) / range_v * bins)
-        idx = min(idx, bins - 1)
-        counts[idx] += 1
-    total = len(values)
-    ent = 0.0
-    for c in counts:
-        if c > 0:
-            p = c / total
-            ent -= p * math.log(p + 1e-10)
-    return ent
-
-def _gradient_manual(values):
-    n = len(values)
-    if n < 2:
-        return [0.0]
-    grad = [0.0] * n
-    grad[0] = values[1] - values[0]
-    grad[-1] = values[-1] - values[-2]
-    for i in range(1, n - 1):
-        grad[i] = (values[i + 1] - values[i - 1]) / 2.0
-    return grad
-
-
 class DerivativesFeed:
     def __init__(self, ttl=90):
         self._cache = {}
@@ -447,38 +408,60 @@ class Config:
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "IX7kLH0ssWHP5TpYMUGcp0pzq4LX4Lqi7m4XtlqMkkq6DCZAsLhoeYZ3533jJFF4")
     binance_secret: str = os.getenv("BINANCE_SECRET", "LmICnpSpMxL1riv4RfIf0HBGRfhDTP5JhDUYdlPSukpqV7kDTonrZ0j3DWp1a7hU")
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "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")
+    nvidia_api_key_oss: str = os.getenv("NVIDIA_API_KEY_OSS", "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")
     ai_model: str = "mistralai/mistral-medium-3.5-128b"
+    ai_model_oss: str = "openai/gpt-oss-20b"
+    ai_race_enabled: bool = True
+    ai_race_timeout: float = 45.0
+    
+    # === AGGRESSIVE CONFIG (خفيف الفلاتر لتشغيل الصفقات) ===
     dry_run: bool = False
-    leverage: int = 10
+    leverage: int = 5  # Base leverage for slots 1-2
     risk_per_trade_pct: float = 3.0
-    tier_levels_enabled: bool = True
     trailing_enabled: bool = True
-    trailing_activation: float = 80.0
-    trailing_drop: float = 9.0
-    max_daily_trades: int = 12
-    max_open_positions: int = 2
-    cooldown_seconds: int = 120
+    trailing_activation: float = 70.0
+    trailing_drop: float = 8.0
+    max_daily_trades: int = 15
+    max_open_positions: int = 5
+    cooldown_seconds: int = 60
     max_sl_percent: float = 2.0
-    max_tp_percent: float = 5.0
+    max_tp_percent: float = 6.0
     min_rr_ratio: float = 2.0
-    max_daily_loss_pct: float = 4.0
-    max_consecutive_losses: int = 4
-    min_signal_score: float = 52.0
-    min_confidence: float = 45.0
-    min_module_agreement: int = 3
-    min_entry_quality: float = 48.0
-    max_risk_for_entry: float = 48.0
-    min_momentum_score: float = 45.0
-    min_trend_alignment: int = 2
+    max_daily_loss_pct: float = 5.0
+    max_consecutive_losses: int = 3
+    
+    # فلاتر خفيفة للسماح بدخول الصفقات
+    min_signal_score: float = 45.0
+    min_confidence: float = 40.0
+    min_module_agreement: int = 2
+    min_entry_quality: float = 45.0
+    max_risk_for_entry: float = 55.0
+    min_momentum_score: float = 40.0
+    min_trend_alignment: int = 1
+
+    # === 5-SLOT SYSTEM CONFIG (Dynamic Leverage) ===
+    slot1_2_min_score: float = 45.0
+    slot1_2_min_conf: float = 40.0
+    slot1_2_leverage: int = 5
+
+    slot3_4_min_score: float = 62.0
+    slot3_4_min_conf: float = 58.0
+    slot3_4_leverage: int = 15
+
+    slot5_min_score: float = 78.0
+    slot5_min_conf: float = 72.0
+    slot5_leverage: int = 20
+    slot5_min_iss_confidence: float = 80.0  # الشرط الخاص بموديول ISS
+    
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
     ai_min_veto_confidence: float = 80.0
     use_external_strategies: bool = True
     external_strategies_list: List[str] = field(default_factory=lambda: ["candle_wick", "EMA_cross", "stochBB", "StochRSIMACD"])
-    scanner_interval: int = 45
+    scanner_interval: int = 30
     scanner_top_n: int = 12
-    scanner_min_volume_usdt: float = 3_000_000
-    scanner_min_atr_pct: float = 0.3
+    scanner_min_volume_usdt: float = 2_000_000
+    scanner_min_atr_pct: float = 0.25
     primary_tf: str = "1h"
     trend_tf: str = "4h"
     confirm_tf: str = "15m"
@@ -496,7 +479,7 @@ class Config:
         "dotusdt": "DOT/USDT:USDT", "ltcusdt": "LTC/USDT:USDT", "aptusdt": "APT/USDT:USDT",
         "opusdt": "OP/USDT:USDT", "jupusdt": "JUP/USDT:USDT", "tiausdt": "TIA/USDT:USDT",
     })
-    db_path: str = "apex_trades_v2.db"
+    db_path: str = "apex_aggressive_v3.db"
     ws_ping_interval: int = 20
     ws_ping_timeout: int = 20
     ws_reconnect_delay: int = 8
@@ -608,11 +591,11 @@ class FinalDecision:
 
 
 class APEXEngine:
+    # NEW: تم إضافة ISS بأعلى وزن
     BASE_WEIGHTS = {
-        "trend": 0.15, "momentum": 0.12, "volume": 0.10, "structure": 0.10,
-        "candle": 0.07, "deriv": 0.12, "ichimoku": 0.07, "sr_levels": 0.06,
-        "volatility": 0.04,
-        "iss_quantum": 0.17,
+        "trend": 0.14, "momentum": 0.11, "volume": 0.08, "structure": 0.08,
+        "candle": 0.06, "deriv": 0.12, "ichimoku": 0.07, "sr_levels": 0.06, 
+        "volatility": 0.04, "iss_quantum": 0.24,  # أعلى وزن لأنه يصحح البقية
     }
 
     def analyze(self, data_primary, data_trend=None, data_fast=None, symbol=None, exchange_pub=None):
@@ -640,6 +623,7 @@ class APEXEngine:
             self._module_candle(primary), self._module_deriv(primary, deriv_data),
             self._module_ichimoku(primary), self._module_sr_levels(primary),
             self._module_volatility(primary),
+            # ✅ إضافة موديول التفرد الكوني
             self._module_ethereal_iss(primary),
         ]
         out.module_signals = signals
@@ -651,7 +635,8 @@ class APEXEngine:
         total_weight = 0.0
         bull_count = 0
         bear_count = 0
-        for sig, (name, w) in zip(signals, weights.items()):
+        for sig in signals:
+            w = weights.get(sig.name, 0.0)
             effective_weight = w * (sig.confidence / 100.0)
             weighted_score += sig.score * effective_weight
             total_weight += effective_weight
@@ -678,9 +663,9 @@ class APEXEngine:
             out.direction = Direction.SHORT
         else:
             out.direction = Direction.NEUTRAL
-        sl_mult = 1.5 if out.trend_strength > 25 else 2.0
-        tp_mult = max(CFG.min_rr_ratio, 3.0 if out.trend_strength > 30 else 2.5)
-        out.sl_percent = clamp(out.volatility_pct * sl_mult, 0.5, CFG.max_sl_percent)
+        sl_mult = 1.2 if out.trend_strength > 25 else 1.8  # أكثر حدة قليلاً
+        tp_mult = max(CFG.min_rr_ratio, 4.0 if out.trend_strength > 30 else 2.5)
+        out.sl_percent = clamp(out.volatility_pct * sl_mult, 0.4, CFG.max_sl_percent)
         out.tp_percent = clamp(out.volatility_pct * tp_mult * sl_mult, 1.0, CFG.max_tp_percent)
         out.rr_ratio = safe_div(out.tp_percent, out.sl_percent, 2.0)
         block_reason = self._smart_filters(primary, out, deriv_data)
@@ -699,6 +684,54 @@ class APEXEngine:
             out.decision = Decision.WAIT
         out.reasons = self._build_reasons(out, signals, adx_val, plus_di, minus_di)
         return out
+
+    # ===============================================================
+    # 🧠 NEW: موديول التفرد الكوني (ISS) - قلب الخوارزمية العدوانية
+    # ===============================================================
+    def _module_ethereal_iss(self, d):
+        """
+        Information Spacetime Singularity (ISS)
+        يرصد الاختناق المعلوماتي الذي يسبق الانفجار السعري.
+        """
+        closes = np.array(d.closes)
+        volumes = np.array(d.volumes)
+        if len(closes) < 30:
+            return ModuleSignal("iss_quantum", 50, 10, Direction.NEUTRAL)
+
+        # 1. حساب الإنتروبيا المتقاطعة (ضغط المعلومات)
+        price_changes = np.diff(closes)
+        hist, _ = np.histogram(price_changes, bins=10, density=True)
+        market_entropy = entropy(hist + 1e-10)
+
+        # 2. التقلب المحلي
+        std_dev = np.std(closes[-14:])
+        # 3. معامل الاختناق (كلما زاد، كان الاختناق أشد)
+        suffocation = market_entropy / (std_dev + 1e-10)
+
+        # 4. الانحدار الأخير (الاتجاه الذي سينفجر فيه السعر)
+        recent_flux = np.gradient(closes[-5:])
+        bias = np.mean(recent_flux)
+
+        # 5. تحويل إلى سكور (0-100)
+        # إذا كان الاختناق شديداً والانحياز موجباً => انفجار صاعد
+        score = 50 + (bias / (closes[-1] * 0.001)) * 15
+        score = clamp(score, 0, 100)
+
+        # الثقة تعتمد على شدة الاختناق
+        confidence = clamp(suffocation * 25, 30, 99)
+
+        direction = Direction.LONG if score > 55 else (Direction.SHORT if score < 45 else Direction.NEUTRAL)
+        return ModuleSignal(
+            name="iss_quantum",
+            score=score,
+            confidence=confidence,
+            direction=direction,
+            details={"entropy": market_entropy, "singularity": suffocation, "bias": bias}
+        )
+
+    # باقي الموديولات (_module_trend, _module_momentum, ... إلخ) موجودة في الكود الأصلي
+    # (اختصاراً للمساحة، لكنها مضافة في الكود النهائي بالكامل)
+    # ... (سيتم وضعها كلها في المرفق النهائي) ...
 
     def _module_trend(self, d, trend_d=None):
         closes = d.closes
@@ -986,45 +1019,6 @@ class APEXEngine:
         return ModuleSignal(name="volatility", score=score, confidence=confidence, direction=direction,
                             details={"atr_pct": atr_pct, "bw": bw, "pct_b": pct_b, "hv": hv, "vol_regime": vol_regime})
 
-    # ══════════════════════════════════════════════════════════
-    # ✅ Supreme Module: ISS (Information Spacetime Singularity)
-    #    بدون numpy/scipy — يستخدم math فقط
-    # ══════════════════════════════════════════════════════════
-    def _module_ethereal_iss(self, d):
-        closes = d.closes
-
-        if len(closes) < 30:
-            return ModuleSignal("iss_quantum", 50, 10, Direction.NEUTRAL)
-
-        # 1. حساب الإنتروبيا (العشوائية المعلوماتية) يدوياً
-        price_changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-        market_entropy = _entropy_manual(price_changes)
-
-        # 2. رصد "التفرد" (Singularity)
-        std_dev = _std(closes[-14:])
-        suffocation_factor = market_entropy / (std_dev + 1e-10)
-
-        # 3. تحديد "انهيار الاحتمالات" (Probability Collapse)
-        recent_flux = _gradient_manual(closes[-5:])
-        bias = _mean(recent_flux)
-
-        # تحويل القيمة لسكور (0-100)
-        score = 50 + (bias / (closes[-1] * 0.001)) * 10
-        score = clamp(score, 0, 100)
-
-        # الثقة تزداد عندما نصل لحالة "التفرد"
-        confidence = clamp(suffocation_factor * 20, 30, 98)
-
-        direction = Direction.LONG if score > 55 else (Direction.SHORT if score < 45 else Direction.NEUTRAL)
-
-        return ModuleSignal(
-            name="iss_quantum",
-            score=score,
-            confidence=confidence,
-            direction=direction,
-            details={"entropy": market_entropy, "singularity": suffocation_factor}
-        )
-
     def _detect_regime(self, d, deriv_data):
         closes = d.closes
         if len(closes) < 30: return Regime.RANGING
@@ -1050,13 +1044,13 @@ class APEXEngine:
     def _adaptive_weights(self, regime):
         w = dict(self.BASE_WEIGHTS)
         if regime in (Regime.TRENDING_UP, Regime.TRENDING_DOWN):
-            w["trend"] = 0.20; w["momentum"] = 0.14; w["ichimoku"] = 0.10; w["sr_levels"] = 0.04; w["iss_quantum"] = 0.14
+            w["trend"] = 0.25; w["momentum"] = 0.18; w["ichimoku"] = 0.12; w["sr_levels"] = 0.05; w["iss_quantum"] = 0.10
         elif regime in (Regime.BREAKOUT_UP, Regime.BREAKOUT_DOWN):
-            w["volume"] = 0.16; w["volatility"] = 0.10; w["momentum"] = 0.14; w["deriv"] = 0.14; w["iss_quantum"] = 0.20
+            w["volume"] = 0.20; w["volatility"] = 0.12; w["momentum"] = 0.18; w["deriv"] = 0.18; w["iss_quantum"] = 0.12
         elif regime in (Regime.REVERSAL_UP, Regime.REVERSAL_DOWN):
-            w["candle"] = 0.14; w["momentum"] = 0.16; w["sr_levels"] = 0.12; w["deriv"] = 0.14; w["iss_quantum"] = 0.18
+            w["candle"] = 0.18; w["momentum"] = 0.20; w["sr_levels"] = 0.15; w["deriv"] = 0.18; w["iss_quantum"] = 0.10
         elif regime == Regime.HIGH_VOLATILITY:
-            w["deriv"] = 0.18; w["volatility"] = 0.06; w["trend"] = 0.10; w["iss_quantum"] = 0.20
+            w["deriv"] = 0.22; w["volatility"] = 0.08; w["trend"] = 0.12; w["iss_quantum"] = 0.20
         total = sum(w.values())
         return {k: v / total for k, v in w.items()}
 
@@ -1146,7 +1140,7 @@ class TradeDB:
                     pnl_percent REAL, commission REAL DEFAULT 0,
                     closed_at TEXT, close_reason TEXT,
                     ai_explanation TEXT, tf_alignment INTEGER,
-                    final_score REAL
+                    final_score REAL, slot_used INTEGER DEFAULT 0, leverage_used INTEGER DEFAULT 5
                 );
                 CREATE INDEX IF NOT EXISTS idx_status ON trades(status);
                 CREATE INDEX IF NOT EXISTS idx_symbol ON trades(symbol);
@@ -1161,8 +1155,8 @@ class TradeDB:
                 (symbol, side, mode, entry_price, quantity, sl_price, tp_price,
                 sl_order_id, tp_order_id, entry_order_id, confidence, entry_quality,
                 risk_score, regime, reason, timestamp, status, ai_explanation,
-                tf_alignment, final_score)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tf_alignment, final_score, slot_used, leverage_used)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (kw.get("symbol"), kw.get("side"), kw.get("mode"),
                  kw.get("entry_price"), kw.get("quantity"),
                  kw.get("sl_price"), kw.get("tp_price"),
@@ -1172,7 +1166,8 @@ class TradeDB:
                  kw.get("regime", ""), kw.get("reason", ""),
                  kw.get("timestamp", ""), kw.get("status", "OPEN"),
                  kw.get("ai_explanation", ""), kw.get("tf_alignment", 0),
-                 kw.get("final_score", 0)))
+                 kw.get("final_score", 0), kw.get("slot_used", 0),
+                 kw.get("leverage_used", 5)))
             self.conn.commit()
             return cur.lastrowid
 
@@ -1240,12 +1235,12 @@ class PositionMonitor:
         self.exchange = exchange
         self.db = db_instance
         self.cfg = config
-        self.trailing_peaks: Dict[str, float] = {}
+        self.trailing_peaks: Dict[int, float] = {}
         self._run = True
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
-        logger.info("Stateless Position Monitor started (Binance API Driven)")
+        logger.info("Position Monitor started")
 
     def stop(self):
         self._run = False
@@ -1253,35 +1248,35 @@ class PositionMonitor:
     def _loop(self):
         while self._run:
             try:
-                self.monitor_live_positions()
+                self.monitor_open_trades()
             except Exception as e:
                 logger.error(f"Monitor loop error: {e}")
             time.sleep(self.cfg.monitor_interval)
 
-    def monitor_live_positions(self):
+    def monitor_open_trades(self):
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return
         try:
-            positions = self.exchange.fetch_positions()
-            active_positions = [p for p in positions if float(p.get("contracts", 0)) > 0]
+            symbols = list(set([t['symbol'] for t in open_trades]))
+            tickers = self.exchange.fetch_tickers(symbols)
         except Exception as e:
-            logger.error(f"Failed to fetch live positions: {e}")
+            logger.error(f"Monitor fetch error: {e}")
             return
-
-        if not active_positions:
-            return
-
-        for p in active_positions:
-            symbol = p['symbol']
-            side = p['side'].upper()
-            qty = float(p['contracts'])
-            entry_price = float(p['entryPrice'])
-
-            try:
-                current_price = self.exchange.fetch_ticker(symbol)['last']
-            except Exception:
+        for trade in open_trades:
+            tid = trade['id']
+            symbol = trade['symbol']
+            side = trade['side']
+            entry_price = trade['entry_price']
+            tp_price = trade['tp_price']
+            sl_price = trade['sl_price']
+            qty = trade['quantity']
+            if symbol not in tickers:
                 continue
-
-            tp_price = entry_price * (1 + self.cfg.max_tp_percent / 100) if side == "LONG" else entry_price * (1 - self.cfg.max_tp_percent / 100)
-
+            current_price = tickers[symbol]['last']
+            if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
+                self.close_trade(trade, current_price, "STOP_LOSS")
+                continue
             if self.cfg.trailing_enabled:
                 if side == "LONG":
                     current_distance = current_price - entry_price
@@ -1289,52 +1284,67 @@ class PositionMonitor:
                 else:
                     current_distance = entry_price - current_price
                     tp_distance = entry_price - tp_price
-
                 progress = (current_distance / tp_distance) * 100.0 if tp_distance > 0 else 0.0
-
-                if symbol not in self.trailing_peaks:
-                    self.trailing_peaks[symbol] = 0.0
-                if progress > self.trailing_peaks[symbol]:
-                    self.trailing_peaks[symbol] = progress
-
-                peak = self.trailing_peaks[symbol]
-
+                if tid not in self.trailing_peaks:
+                    self.trailing_peaks[tid] = 0.0
+                if progress > self.trailing_peaks[tid]:
+                    self.trailing_peaks[tid] = progress
+                peak = self.trailing_peaks[tid]
                 if peak >= self.cfg.trailing_activation:
                     if progress <= (peak - self.cfg.trailing_drop):
-                        logger.info(f"🚀 Trailing Stop Activated for {symbol}! Securing profit.")
-                        self.close_position_direct(symbol, side, qty, current_price, "TRAILING_TAKE_PROFIT")
+                        self.close_trade(trade, current_price, "TRAILING_TAKE_PROFIT")
                         continue
+            if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
+                self.close_trade(trade, current_price, "TAKE_PROFIT")
 
-    def close_position_direct(self, symbol, side, qty, exit_price, reason):
+    def close_trade(self, trade, exit_price, reason):
+        tid = trade['id']
+        symbol = trade['symbol']
+        side = trade['side']
+        qty = trade['quantity']
+        entry_price = trade['entry_price']
         try:
-            close_side = 'sell' if side == 'LONG' else 'buy'
-            self.exchange.create_market_order(symbol, close_side, qty, params={"reduceOnly": True})
-            logger.info(f"✅ تم إغلاق صفقة {symbol} بسبب: {reason}")
-
-            self.exchange.cancel_all_orders(symbol)
-            logger.info(f"🧹 تم تنظيف جميع الطلبات المعلقة المرتبطة بعملة {symbol}")
-
-            if symbol in self.trailing_peaks:
-                del self.trailing_peaks[symbol]
-
-            open_trades = [t for t in self.db.get_open_trades() if t["symbol"] == symbol]
-            for t in open_trades:
-                entry = t['entry_price']
-                if side == "LONG":
-                    pnl = (exit_price - entry) * qty
-                    pnl_pct = ((exit_price - entry) / entry) * 100
-                else:
-                    pnl = (entry - exit_price) * qty
-                    pnl_pct = ((entry - exit_price) / entry) * 100
-                self.db.close_trade(t['id'], exit_price, pnl, pnl_pct, 0.0, reason)
-
+            if not self.cfg.dry_run:
+                close_side = 'sell' if side == 'LONG' else 'buy'
+                self.exchange.create_market_order(symbol, close_side, qty)
         except Exception as e:
-            logger.error(f"Error closing position {symbol}: {e}")
+            logger.error(f"Exchange API error closing trade {tid}: {e}")
+            return
+        if side == "LONG":
+            pnl = (exit_price - entry_price) * qty
+            pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        else:
+            pnl = (entry_price - exit_price) * qty
+            pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+        self.db.close_trade(tid=tid, ep=exit_price, rpnl=pnl, pp=pnl_pct, comm=0.0, reason=reason)
+        logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
+        if tid in self.trailing_peaks:
+            del self.trailing_peaks[tid]
+
+    def _cancel(self, sym, trade):
+        logger.info(f"🧹 جاري تنظيف الطلبات المرتبطة بالصفقة المنتهية {sym}...")
+        orders_to_cancel = [("SL", trade.get("sl_order_id")), ("TP", trade.get("tp_order_id"))]
+        for order_type, oid in orders_to_cancel:
+            if not oid:
+                continue
+            try:
+                order = self.exchange.fetch_order(oid, sym)
+                if order.get("status") == "open":
+                    self.exchange.cancel_order(oid, sym)
+                    logger.info(f"✅ تم حذف طلب {order_type} الخاص بالبوت بنجاح (ID: {oid}).")
+                else:
+                    logger.info(f"ℹ️ طلب {order_type} غير مفتوح (حالة: {order.get('status')})، لا حاجة للحذف.")
+            except Exception as e:
+                err_str = str(e)
+                if "-2011" in err_str or "Unknown order" in err_str or "Order does not exist" in err_str:
+                    logger.info(f"ℹ️ طلب {order_type} غير موجود (تم تنفيذه أو حذفه مسبقاً).")
+                else:
+                    logger.error(f"⚠️ خطأ غير متوقع أثناء حذف طلب {order_type}: {e}")
 
 
 app = Flask(__name__)
 bot_stats = {
-    "status": "STARTING", "version": "APEX-v3.0-ISS-OPP-FIX", "uptime": 0,
+    "status": "STARTING", "version": "APEX-v3.1-ISS-AGGRESSIVE", "uptime": 0,
     "trades_today": 0, "open_positions": 0, "scanner": [],
     "last_analysis": {}, "mode": "DRY_RUN" if CFG.dry_run else "LIVE",
     "current_ip": "", "performance": {}
@@ -1355,11 +1365,12 @@ def home():
             <td>{v.get('score', 0):.1f}</td>
             <td>{v.get('regime', '')}</td>
             <td>{v.get('tf_align', 0)}/3</td>
+            <td>{v.get('slot', '-')}</td>
             <td>{v.get('time', '')[-8:]}</td>
         </tr>"""
     return f"""<!DOCTYPE html>
 <html>
-<head><title>APEX Trading Bot</title>
+<head><title>APEX v3.1 ISS</title>
 <style>
   body {{ font-family: monospace; background: #0a0a0a; color: #00ff88; padding: 20px; }}
   h1 {{ color: #00ccff; }}
@@ -1370,7 +1381,7 @@ def home():
 </style>
 </head>
 <body>
-<h1>APEX TRADING ENGINE v3.0 + ISS + OPP FIX</h1>
+<h1>APEX v3.1 - Singularity Sniper (5-Slots)</h1>
 <div>
   <span class="stat">Mode: <b>{bot_stats['mode']}</b></span>
   <span class="stat">IP: {bot_stats['current_ip']}</span>
@@ -1381,7 +1392,7 @@ def home():
 </div>
 <h2>Last Analysis</h2>
 <table>
-  <tr><th>Symbol</th><th>Decision</th><th>Score</th><th>Regime</th><th>TF Align</th><th>Time</th></tr>
+  <tr><th>Symbol</th><th>Decision</th><th>Score</th><th>Regime</th><th>TF Align</th><th>Slot</th><th>Time</th></tr>
   {rows}
 </table>
 </body></html>"""
@@ -1447,19 +1458,114 @@ def daily_pnl_pct():
     return db.daily_pnl() / bal * 100
 
 
-def position_size(balance, entry, sl):
-    risk_usdt = balance * CFG.risk_per_trade_pct / 100
+def position_size(balance, entry, sl, risk_pct=CFG.risk_per_trade_pct):
+    risk_usdt = balance * risk_pct / 100
     sl_dist = abs(entry - sl)
     if sl_dist <= 0:
         return 0.0
     return risk_usdt / sl_dist
 
+# =====================================================
+# 🎯 5-SLOT CONFIGURATION ENGINE (Dynamic Leverage)
+# =====================================================
+def get_slot_config(final_score, entry_quality, iss_confidence, current_positions):
+    """
+    تحديد الفتحة والرافعة المالية بناءً على جودة الإشارة وعدد المراكز المفتوحة.
+    الفتحة 1-2: خفيفة (x5) | 3-4: قوية (x15) | 5: SNIPER (x20)
+    """
+    # الاستعلام عن موديول ISS من الـ FinalDecision أو تمريره كـ iss_conf
+    if current_positions >= CFG.max_open_positions:
+        return None
 
+    slot = current_positions + 1  # 1-indexed
+
+    # SLOT 1 & 2 (خفيفة)
+    if slot <= 2:
+        if final_score >= CFG.slot1_2_min_score and entry_quality >= CFG.slot1_2_min_conf:
+            return {"slot": slot, "leverage": CFG.slot1_2_leverage, "name": "NORMAL"}
+        return None
+
+    # SLOT 3 & 4 (قوية) - رافعة 15
+    if slot <= 4:
+        if final_score >= CFG.slot3_4_min_score and entry_quality >= CFG.slot3_4_min_conf:
+            return {"slot": slot, "leverage": CFG.slot3_4_leverage, "name": "STRONG"}
+        return None
+
+    # SLOT 5 (SNIPER) - رافعة 20
+    if slot == 5:
+        # شرط الدخول للفتحة الخامسة: إما ISS عالي أو سكور خارق
+        if (iss_confidence >= CFG.slot5_min_iss_confidence) or (final_score >= CFG.slot5_min_score and entry_quality >= CFG.slot5_min_conf):
+            return {"slot": slot, "leverage": CFG.slot5_leverage, "name": "SNIPER"}
+        return None
+
+    return None
+
+
+# =====================================================
+# 🚀 AI ANALYST — Dual-Model Race (سرعة البرق)
+# =====================================================
 class AIAnalyst:
+    def __init__(self):
+        self.client_mistral = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=CFG.nvidia_api_key,
+        )
+        self.client_oss = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=CFG.nvidia_api_key_oss,
+        )
+
+    def _call_model(self, client: OpenAI, model: str, prompt: str, label: str) -> Dict[str, Any]:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "/think"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            top_p=1,
+            max_tokens=4096,
+            stream=True,
+        )
+        content_parts = []
+        for chunk in completion:
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content is not None:
+                content_parts.append(delta.content)
+        raw = "".join(content_parts)
+        return {"raw": raw, "label": label}
+
+    def _parse_response(self, raw: str) -> Dict[str, Any]:
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": []}
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+        js = cleaned.find("{")
+        je = cleaned.rfind("}") + 1
+        if js >= 0 and je > js:
+            cleaned = cleaned[js:je]
+        try:
+            dj = json.loads(cleaned)
+            result["decision"] = str(dj.get("decision", "WAIT")).upper()
+            if result["decision"] not in ("BUY", "SELL", "WAIT"):
+                result["decision"] = "WAIT"
+            result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
+            result["explanation"] = str(dj.get("explanation", ""))
+            result["risk_warnings"] = dj.get("risk_warnings", [])
+        except Exception:
+            result["decision"] = "WAIT"
+            result["confidence"] = 0.0
+            result["explanation"] = "PARSE_ERROR"
+        return result
+
     def analyze(self, symbol, apex_out):
-        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False}
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False, "winner": ""}
         if not CFG.use_ai_veto and not CFG.use_ai_explainer:
             return result
+
         prompt = f"""أنت محلل تداول. اقرأ نتائج محرك APEX التالي وأعطِ رأيك.
 
 العملة: {symbol}
@@ -1480,42 +1586,47 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 
 أجب JSON فقط:
 {{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
+
+        if CFG.ai_race_enabled:
+            try:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = {
+                        executor.submit(self._call_model, self.client_mistral, CFG.ai_model, prompt, "Mistral"): "Mistral",
+                        executor.submit(self._call_model, self.client_oss, CFG.ai_model_oss, prompt, "GPT-OSS"): "GPT-OSS",
+                    }
+                    for future in as_completed(futures, timeout=CFG.ai_race_timeout):
+                        label = futures[future]
+                        try:
+                            resp = future.result()
+                            parsed = self._parse_response(resp["raw"])
+                            result["decision"] = parsed["decision"]
+                            result["confidence"] = parsed["confidence"]
+                            result["explanation"] = parsed["explanation"]
+                            result["risk_warnings"] = parsed["risk_warnings"]
+                            result["winner"] = label
+                            logger.info(f"🏁 AI RACE [{symbol}] الفائز: {label} | {parsed['decision']} | Conf={parsed['confidence']}")
+                            return result
+                        except Exception as e:
+                            logger.warning(f"AI RACE [{symbol}] فشل {label}: {e}")
+                            continue
+                result["error"] = True
+                result["explanation"] = "AI_RACE_BOTH_FAILED"
+                return result
+            except Exception as e:
+                logger.warning(f"AI RACE ERROR [{symbol}]: {e}")
+                result["error"] = True
+                result["explanation"] = f"AI_RACE_ERROR: {str(e)[:100]}"
+                return result
+
         try:
-            invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {CFG.nvidia_api_key}",
-                "Accept": "application/json",
-            }
-            payload = {
-                "messages": [
-                    {"role": "system", "content": "/think"},
-                    {"role": "user", "content": prompt}
-                ],
-                "model": CFG.ai_model,
-                "reasoning_effort": "high",
-                "max_tokens": 16384,
-                "stream": False,
-                "temperature": 0.7,
-                "top_p": 1
-            }
-            response = requests.post(invoke_url, headers=headers, json=payload, timeout=60)
-            resp_json = response.json()
-            raw = resp_json["choices"][0]["message"]["content"] or ""
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
-                cleaned = "\n".join(lines).strip()
-            js = cleaned.find("{"); je = cleaned.rfind("}") + 1
-            if js >= 0 and je > js:
-                cleaned = cleaned[js:je]
-            dj = json.loads(cleaned)
-            result["decision"] = str(dj.get("decision", "WAIT")).upper()
-            if result["decision"] not in ("BUY", "SELL", "WAIT"):
-                result["decision"] = "WAIT"
-            result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
-            result["explanation"] = str(dj.get("explanation", ""))
-            result["risk_warnings"] = dj.get("risk_warnings", [])
-            logger.info(f"AI {symbol}: {result['decision']} | Conf={result['confidence']} | {result['explanation'][:80]}")
+            resp = self._call_model(self.client_mistral, CFG.ai_model, prompt, "Mistral")
+            parsed = self._parse_response(resp["raw"])
+            result["decision"] = parsed["decision"]
+            result["confidence"] = parsed["confidence"]
+            result["explanation"] = parsed["explanation"]
+            result["risk_warnings"] = parsed["risk_warnings"]
+            result["winner"] = "Mistral"
+            logger.info(f"AI {symbol}: {parsed['decision']} | Conf={parsed['confidence']}")
         except Exception as e:
             logger.warning(f"AI ERROR {symbol}: {e}")
             result["decision"] = "WAIT"; result["confidence"] = 0; result["error"] = True
@@ -1581,81 +1692,6 @@ active_symbols = {}
 active_lock = threading.Lock()
 
 
-# ══════════════════════════════════════════════════════════════
-# ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool & Ranking)
-#    التعديلات:
-#    1- لا تحذف الفرصة عند مجرد اختيارها (pool[0] بدل pop)
-#    2- أضف دالة remove للحذف عند نجاح التنفيذ
-#    3- مدة الاحتفاظ 300 ثانية بدل 90
-#    4- لا تضيع الفرصة إذا فشل التنفيذ
-#    5- إذا فشلت الأولى جرّب الثانية
-# ══════════════════════════════════════════════════════════════
-class OpportunityPool:
-    def __init__(self, max_size=5, ttl_seconds=300):
-        self.pool = []
-        self.max_size = max_size
-        self.ttl_seconds = ttl_seconds
-        self.lock = threading.Lock()
-
-    def add_or_update(self, symbol, final, apex_out):
-        with self.lock:
-            self.pool = [item for item in self.pool if item["symbol"] != symbol]
-
-            rr_val = getattr(apex_out, 'rr_ratio', 2.0)
-            rr_score = clamp((rr_val / 4.0) * 100, 0, 100)
-            vol_quality = 70.0 if getattr(apex_out, 'volume_spike', False) else 50.0
-            momentum_score = 60.0
-
-            opp_score = (
-                (final.final_score * 0.40) +
-                (apex_out.confidence * 0.25) +
-                (rr_score * 0.15) +
-                (vol_quality * 0.10) +
-                (momentum_score * 0.10)
-            )
-
-            item = {
-                "symbol": symbol,
-                "final": final,
-                "apex": apex_out,
-                "opp_score": opp_score,
-                "timestamp": time.time()
-            }
-
-            self.pool.append(item)
-            self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
-
-            if len(self.pool) > self.max_size:
-                self.pool = self.pool[:self.max_size]
-
-    def clean_expired(self):
-        with self.lock:
-            now = time.time()
-            self.pool = [item for item in self.pool if (now - item["timestamp"]) < self.ttl_seconds]
-
-    # ✅ التعديل 1: لا تحذف الفرصة عند مجرد اختيارها
-    def get_best_opportunity(self):
-        with self.lock:
-            now = time.time()
-            self.pool = [
-                item for item in self.pool
-                if (now - item["timestamp"]) < self.ttl_seconds
-            ]
-            if not self.pool:
-                return None
-            self.pool.sort(key=lambda x: x["opp_score"], reverse=True)
-            return self.pool[0]
-
-    # ✅ التعديل 2: دالة حذف عند نجاح التنفيذ
-    def remove(self, symbol):
-        with self.lock:
-            self.pool = [x for x in self.pool if x["symbol"] != symbol]
-
-
-# ✅ التعديل 3: مدة الاحتفاظ 300 ثانية
-opp_pool = OpportunityPool(max_size=5, ttl_seconds=300)
-
-
 class MarketScanner:
     def __init__(self):
         self._run = True
@@ -1678,7 +1714,7 @@ class MarketScanner:
 
     def _cycle(self):
         logger.info("=" * 60)
-        logger.info("Scanning...")
+        logger.info("Scanning for Singularities...")
         candidates = []
         for sk, sym in CFG.watchlist.items():
             try:
@@ -1690,9 +1726,9 @@ class MarketScanner:
             time.sleep(0.3)
         candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
         top = candidates[:CFG.scanner_top_n]
-        logger.info(f"Scanned {len(CFG.watchlist)} -> {len(candidates)} -> Top {len(top)}")
+        logger.info(f"Scanned {len(CFG.watchlist)} -> Top {len(top)}")
         for i, c in enumerate(top):
-            logger.info(f"  #{i+1} {c['symbol']} | Score={c['score']:.1f} | Vol={c['volume_usdt']/1e6:.1f}M | ATR={c['atr_pct']:.2f}%")
+            logger.info(f"  #{i+1} {c['symbol']} | Score={c['score']:.1f} | Vol={c['volume_usdt']/1e6:.1f}M")
         bot_stats["scanner"] = [{"symbol": c["symbol"], "score": c["score"]} for c in top]
         with active_lock:
             active_symbols.clear()
@@ -1707,7 +1743,7 @@ class MarketScanner:
             time.sleep(1)
 
     def _quick(self, sk, sym):
-        result = {"symbol_key": sk, "symbol": sym, "score": 0.0, "volume_usdt": 0.0, "atr_pct": 0.0, "reasons": []}
+        result = {"symbol_key": sk, "symbol": sym, "score": 0.0, "volume_usdt": 0.0, "atr_pct": 0.0}
         try:
             ticker = exchange_public.fetch_ticker(sym)
             vol = float(ticker.get("quoteVolume", 0) or 0)
@@ -1720,9 +1756,7 @@ class MarketScanner:
             ohlcv = exchange_public.fetch_ohlcv(sym, "1h", limit=50)
             if len(ohlcv) < 20:
                 return None
-            h = [float(x[2]) for x in ohlcv]
-            l = [float(x[3]) for x in ohlcv]
-            c = [float(x[4]) for x in ohlcv]
+            h = [float(x[2]) for x in ohlcv]; l = [float(x[3]) for x in ohlcv]; c = [float(x[4]) for x in ohlcv]
             trs = [max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])) for i in range(1, len(c))]
             atr = sum(trs[-14:]) / 14 if len(trs) >= 14 else 0
             price = c[-1]
@@ -1741,15 +1775,15 @@ class MarketScanner:
         return result
 
     def _deep(self, sk, sym):
-        logger.info(f"Deep: {sym}")
+        logger.info(f"Deep Analysis: {sym}")
         if cm.count(sk, CFG.primary_tf) < 50:
             self._load(sk, sym)
         d_primary = cm.get(sk, CFG.primary_tf)
         d_trend = cm.get(sk, CFG.trend_tf)
         d_fast = cm.get(sk, CFG.confirm_tf)
         if len(d_primary) < 50:
-            logger.info(f"Not enough data: {sym}")
             return
+
         apex = apex_engine.analyze(
             data_primary=d_primary,
             data_trend=d_trend if len(d_trend) >= 50 else None,
@@ -1758,31 +1792,24 @@ class MarketScanner:
             exchange_pub=exchange_public,
         )
         if not apex:
-            logger.info(f"APEX fail: {sym}")
             return
-        logger.info(f">>> APEX {sym}: {apex.decision.value} | Regime={apex.regime.value} | Score={apex.composite_score:.1f} | Conf={apex.confidence:.1f}")
-        for r in apex.reasons:
-            logger.info(f"   {r}")
+
+        logger.info(f">>> APEX {sym}: {apex.decision.value} | Regime={apex.regime.value} | Score={apex.composite_score:.1f}")
+        
+        # استخراج إشارة ISS
+        iss_sig = None
+        for s in apex.module_signals:
+            if s.name == "iss_quantum":
+                iss_sig = s
+                break
+
         ai = ai_analyst.analyze(sym, apex)
 
-        ext_decision = "HOLD"
-        ext_conf = 0
+        ext_decision = "HOLD"; ext_conf = 0
         if CFG.use_external_strategies and EXTERNAL_AVAILABLE:
-            candles_for_adapter = []
-            for c in d_primary:
-                candles_for_adapter.append({
-                    "open": float(c[1]),
-                    "high": float(c[2]),
-                    "low": float(c[3]),
-                    "close": float(c[4]),
-                    "volume": float(c[5])
-                })
-            ext_signals = []
-            for sname in CFG.external_strategies_list:
-                sig = call_strategy_by_name(sname, candles_for_adapter)
-                ext_signals.append(sig)
-            ext_decision, ext_conf, ext_details = aggregate_signals(ext_signals)
-            logger.info(f"🌐 External [{sym}]: {ext_decision} | Conf={ext_conf}")
+            candles_for_adapter = [{"open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])} for c in d_primary]
+            ext_signals = [call_strategy_by_name(sname, candles_for_adapter) for sname in CFG.external_strategies_list]
+            ext_decision, ext_conf, _ = aggregate_signals(ext_signals)
 
         final = FinalDecision()
         final.sl_percent = apex.sl_percent
@@ -1791,101 +1818,63 @@ class MarketScanner:
         final.apex_score = apex.confidence
         final.ai_score = ai["confidence"]
         final.ai_explanation = ai["explanation"]
-        final.risk_score = 50.0
         final.entry_quality = apex.composite_score
         final.tf_alignment = apex.bull_modules if apex.direction == Direction.LONG else apex.bear_modules
+
+        # ==============================================================
+        # 🎯 القاعدة الذهبية العدوانية: إذا ISS عالي => تجاوز كل الفلاتر
+        # ==============================================================
+        iss_override = False
+        if iss_sig and iss_sig.confidence >= CFG.slot5_min_iss_confidence:
+            logger.critical(f"🌌 [ISS SINGULARITY DETECTED] {sym} | Conf={iss_sig.confidence:.1f} | Score={iss_sig.score:.1f}")
+            iss_override = True
 
         is_external_veto = False
         if CFG.use_external_strategies and EXTERNAL_AVAILABLE and ext_decision != "HOLD" and ext_conf >= 50:
             if apex.decision.value != ext_decision and apex.decision != Decision.WAIT:
                 is_external_veto = True
 
-        if apex.decision == Decision.WAIT:
+        if iss_override:
+            # تجاوز الفيتو الخارجي والذكاء الاصطناعي في حالة التفرد الكوني
+            final.decision = Decision.BUY if apex.direction == Direction.LONG else Decision.SELL
+            final.final_score = max(apex.confidence, 95.0)  # قوة خارقة
+            final.reasons = [f"🚀 ISS OVERRIDE | ISS_CONF={iss_sig.confidence:.1f}"] + apex.reasons
+        elif apex.decision == Decision.WAIT:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
-            final.reasons = [f"APEX WAIT | Regime={apex.regime.value}"] + apex.reasons
-
+            final.reasons = [f"APEX WAIT"] + apex.reasons
         elif is_external_veto:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
-            final.reasons = [f"🛑 EXTERNAL VETO | Ext says {ext_decision} ({ext_conf})"] + apex.reasons
-
+            final.reasons = [f"🛑 EXTERNAL VETO"] + apex.reasons
         elif ai["error"]:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
             final.final_score = apex.confidence
-            final.reasons = [f"APEX {apex.decision.value} (AI_ERROR) | Conf={apex.confidence:.1f}"] + apex.reasons
-
+            final.reasons = [f"APEX (AI_ERROR)"] + apex.reasons
         elif CFG.use_ai_veto and ai["decision"] == "WAIT" and ai["confidence"] >= CFG.ai_min_veto_confidence:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
-            final.reasons = [f"🛑 AI VETO (conf={ai['confidence']}) | APEX was {apex.decision.value}"] + apex.reasons
-
+            final.reasons = [f"🛑 AI VETO"] + apex.reasons
         else:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
             final.final_score = (apex.confidence * 0.75) + (ai["confidence"] * 0.15) + (ext_conf * 0.10)
-            final.reasons = [f"✅ APEX {apex.decision.value} | AI={ai['decision']}({ai['confidence']}) | Ext={ext_decision}({ext_conf})"] + apex.reasons
+            final.reasons = [f"✅ APEX {apex.decision.value} | AI={ai['decision']}"] + apex.reasons
 
-        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f} | {final.reasons[0] if final.reasons else ''}")
+        logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f}")
         bot_stats["last_analysis"][sym] = {
             "decision": final.decision.value,
             "score": round(final.final_score, 1),
             "regime": apex.regime.value,
             "tf_align": final.tf_alignment,
-            "ai": f"{ai['decision']}({ai['confidence']}){'[ERR]' if ai['error'] else ''}",
+            "slot": "-",
             "time": datetime.now(timezone.utc).isoformat(),
         }
+
         if final.decision == Decision.WAIT:
             return
-        if final.final_score < CFG.min_confidence:
-            logger.info(f"Score too low: {final.final_score:.1f} < {CFG.min_confidence}")
-            return
 
-        # ══════════════════════════════════════════════════════════
-        # ✅ نظام تجميع الفرص والتصفية التنافسية (Opportunity Pool)
-        # ══════════════════════════════════════════════════════════
-        is_explosive_sniper = (final.final_score >= 96.0 and apex.confidence >= 97.0)
-
-        if is_explosive_sniper:
-            logger.critical(f"⚡ [EXPLOSIVE SNIPER TRIGGERED] التنفيذ الفوري لعملة {sym} | Score={final.final_score:.1f}")
-            execute_trade(sym, final)
-            return
-
-        opp_pool.add_or_update(sym, final, apex)
-
-        # ══════════════════════════════════════════════════════════
-        # ✅ التعديل 5: إذا فشلت الأولى جرّب الثانية (while loop)
-        # ══════════════════════════════════════════════════════════
-        while True:
-            best_opp = opp_pool.get_best_opportunity()
-
-            if best_opp is None:
-                break
-
-            # فحص المراكز المفتوحة الفعلية من بينانس مباشرة
-            try:
-                positions = exchange.fetch_positions()
-                active_positions = len([p for p in positions if float(p.get("contracts", 0)) > 0])
-            except Exception as e:
-                logger.error(f"⚠️ خطأ في فحص الصفقات المفتوحة المباشرة: {e}")
-                break
-
-            if active_positions >= CFG.max_open_positions:
-                logger.warning(f"⏳ تم تأجيل الدخول في {best_opp['symbol']} لوصولك للحد الأقصى للصفقات المفتوحة فعلياً ({active_positions}/{CFG.max_open_positions})")
-                break
-
-            logger.info(f"🏆 [COMPETITIVE WINNER SELECTED] محاولة تنفيذ: {best_opp['symbol']} بقيمة OppScore={best_opp['opp_score']:.1f}")
-
-            # ✅ التعديل 4: لا تضيع الفرصة إذا فشل التنفيذ
-            ok = execute_trade(best_opp["symbol"], best_opp["final"])
-
-            if ok:
-                opp_pool.remove(best_opp["symbol"])
-                break
-            else:
-                # فشلت هذه الفرصة، احذفها وجرّب التالية
-                opp_pool.remove(best_opp["symbol"])
-                logger.info(f"🔄 فشلت صفقة {best_opp['symbol']}، محاولة الفرصة التالية...")
-        # ══════════════════════════════════════════════════════════
+        # تنفيذ الصفقة مع نظام الفتحات
+        execute_trade(sym, final, apex, iss_sig)
 
     def _load(self, sk, sym):
         for tf in CFG.timeframes:
@@ -1924,13 +1913,8 @@ def emergency_close(sym, reason):
                     order = exchange.fetch_order(oid, sym)
                     if order.get("status") == "open":
                         exchange.cancel_order(oid, sym)
-                        logger.info(f"🧹 تم حذف الطلب المرتبط بالصفقة: {oid}")
-                    else:
-                        logger.info(f"ℹ️ الطلب {oid} لم يعد مفتوحاً (حالة: {order.get('status')})")
-                except Exception as e:
-                    err_str = str(e)
-                    if "Unknown order" not in err_str and "Order does not exist" not in err_str and "-2011" not in err_str:
-                        logger.warning(f"⚠️ فشل حذف الطلب {oid}: {e}")
+                except Exception:
+                    pass
     try:
         pos = get_pos(sym)
         if pos and pos != "ERROR":
@@ -1939,156 +1923,115 @@ def emergency_close(sym, reason):
             if ct > 0:
                 cs = "sell" if side == "long" else "buy"
                 exchange.create_market_order(sym, cs, ct, params={"reduceOnly": True})
-                logger.info(f"✅ تم إغلاق صفقة {sym} بالكامل.")
     except Exception as e:
-        logger.critical(f"❌ فشل إغلاق الصفقة (Emergency fail): {e}")
+        logger.critical(f"❌ Emergency close fail: {e}")
 
 
-# ══════════════════════════════════════════════════════════════
-# ✅ التعديل 4: execute_trade ترجع True عند النجاح و False عند الفشل
-# ══════════════════════════════════════════════════════════════
-def execute_trade(sym, final):
+def execute_trade(sym, final, apex, iss_sig):
     st = trade_state.setdefault(sym, {})
     if st.get("executing", False):
-        return False
+        return
 
     with execution_lock:
         try:
             st["executing"] = True
 
-            reasons = []
+            if daily_pnl_pct() <= -CFG.max_daily_loss_pct or db.consecutive_losses() >= CFG.max_consecutive_losses:
+                return
 
+            # مزامنة الصفقات
+            open_trades = [t for t in db.get_open_trades() if t["symbol"] == sym]
             current_pos = get_pos(sym)
+            if open_trades and (not current_pos or current_pos == "ERROR"):
+                try:
+                    price = exchange_public.fetch_ticker(sym)["last"]
+                except: price = 0
+                for t in open_trades:
+                    db.close_trade(t["id"], price, 0, 0, 0, "SYNC_FIX")
+                return
             if current_pos and current_pos != "ERROR":
-                reasons.append("POSITION_ALREADY_OPEN")
+                return
 
             try:
                 open_orders = exchange.fetch_open_orders(sym)
                 if open_orders:
-                    reasons.append("MANUAL_PENDING_ORDER")
-            except Exception:
-                pass
-
-            if daily_pnl_pct() <= -CFG.max_daily_loss_pct:
-                reasons.append("MAX_DAILY_LOSS_REACHED")
-            if db.consecutive_losses() >= CFG.max_consecutive_losses:
-                reasons.append("MAX_CONSECUTIVE_LOSSES_REACHED")
-
-            if "POSITION_ALREADY_OPEN" in reasons or "MAX_DAILY_LOSS_REACHED" in reasons:
-                logger.warning(f"❌ NO TRADE [{sym}] | Reason Codes: {' | '.join(reasons)}")
-                return False
-
-            if "MANUAL_PENDING_ORDER" in reasons:
-                logger.info(f"🧹 تنظيف طلبات معلقة لـ {sym} لمتابعة تنفيذ الصفقة...")
-                try:
-                    exchange.cancel_all_orders(sym)
-                except Exception:
-                    pass
+                    return
+            except: pass
 
             if time.time() - st.get("t", 0) < CFG.cooldown_seconds:
-                return False
+                return
+            if db.count_today() >= CFG.max_daily_trades or db.open_count() >= CFG.max_open_positions:
+                return
+
+            # تحديد الفتحة والرافعة
+            current_positions = db.open_count()
+            iss_conf = iss_sig.confidence if iss_sig else 0.0
+
+            slot_config = get_slot_config(final.final_score, final.entry_quality, iss_conf, current_positions)
+            if not slot_config:
+                logger.info(f"⛔ Slot requirements not met for {sym}")
+                return
+
+            leverage = slot_config["leverage"]
+            slot_num = slot_config["slot"]
+            logger.info(f"🎯 SLOT {slot_num} for {sym} | Leverage: x{leverage} | Name: {slot_config['name']}")
 
             price = exchange_public.fetch_ticker(sym)["last"]
             side = "buy" if final.decision == Decision.BUY else "sell"
-
             sl_price = price * (1 - final.sl_percent / 100) if side == "buy" else price * (1 + final.sl_percent / 100)
             tp_price = price * (1 + final.tp_percent / 100) if side == "buy" else price * (1 - final.tp_percent / 100)
 
-            agreement_score = final.final_score
-            consensus_boost = 0
-
-            if final.apex_score >= 80 and final.ai_score >= 80:
-                consensus_boost += 15
-
-            if final.tf_alignment >= 7:
-                consensus_boost += 10
-
-            net_score = agreement_score + consensus_boost
-
-            if CFG.tier_levels_enabled:
-                if net_score >= 90.0 and final.tf_alignment >= 8:
-                    tier = 4
-                    applied_leverage = CFG.leverage * 2
-                    risk_multiplier = 2.0
-                    logger.info(f"💎 [GOLDEN SNIPER - CONSENSUS REACHED] {sym} | Net Score: {net_score:.1f}")
-                elif net_score >= 78.0 and final.tf_alignment >= 6:
-                    tier = 3
-                    applied_leverage = int(CFG.leverage * 1.5)
-                    risk_multiplier = 1.5
-                elif net_score >= 65.0:
-                    tier = 2
-                    applied_leverage = CFG.leverage
-                    risk_multiplier = 1.0
-                else:
-                    tier = 1
-                    applied_leverage = CFG.leverage
-                    risk_multiplier = 0.8
-            else:
-                tier = 1
-                applied_leverage = CFG.leverage
-                risk_multiplier = 1.0
-
-            logger.info(f"📊 TIER {tier} [{sym}] | Net Score: {net_score:.1f} | Leverage: x{applied_leverage} | Risk x{risk_multiplier}")
-
             balance = get_balance()
-            if balance <= 0:
-                return False
+            if balance <= 0: return
 
-            base_risk = CFG.risk_per_trade_pct * risk_multiplier
-            qty = (balance * base_risk / 100) / abs(price - sl_price) if abs(price - sl_price) > 0 else 0.0
+            # حجم الصفقة يعتمد على المخاطرة الثابتة (لا تتغير بالرافعة)
+            qty = position_size(balance, price, sl_price, CFG.risk_per_trade_pct)
             qty = float(exchange.amount_to_precision(sym, qty))
-            if qty <= 0:
-                return False
+            if qty <= 0: return
 
             if CFG.dry_run:
                 st["t"] = time.time()
-                db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN", entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price, confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-                logger.info(f"✅ DRY RUN Trade Executed for {sym} | TIER {tier}")
-                return True
+                db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN",
+                                entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price,
+                                confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(),
+                                status="OPEN", slot_used=slot_num, leverage_used=leverage)
+                logger.info(f"✅ DRY RUN [SLOT {slot_num}] {sym}")
+                return
 
-            try:
-                exchange.set_leverage(applied_leverage, sym)
-            except Exception:
-                pass
-
+            # تطبيق الرافعة
+            exchange.set_leverage(leverage, sym)
             order = exchange.create_market_order(sym, side, qty)
             eoid = order.get("id", "")
 
             p = None
             for _ in range(10):
                 p = get_pos(sym)
-                if p and p != "ERROR":
-                    break
+                if p and p != "ERROR": break
                 time.sleep(0.5)
-
             if not p or p == "ERROR":
-                logger.critical(f"❌ خطأ حرج: لم يتم العثور على المركز بعد إرسال الطلب لـ {sym}")
-                return False
+                emergency_close(sym, "Position not found")
+                return
 
             entry = float(p.get("entryPrice", price))
             aqty = abs(float(p.get("contracts", 0)))
-
             if aqty <= 0:
-                emergency_close(sym, "الكمية المفتوحة صفر")
-                return False
+                emergency_close(sym, "Zero qty")
+                return
 
             sl_price = entry * (1 - final.sl_percent / 100) if side == "buy" else entry * (1 + final.sl_percent / 100)
             tp_price = entry * (1 + final.tp_percent / 100) if side == "buy" else entry * (1 - final.tp_percent / 100)
-
             sl_price = float(exchange.price_to_precision(sym, sl_price))
             tp_price = float(exchange.price_to_precision(sym, tp_price))
 
             cs = "sell" if side == "buy" else "buy"
             sloid, tpoid = "", ""
-
             try:
                 slo = exchange.create_order(sym, "STOP_MARKET", cs, aqty, None, {"stopPrice": sl_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
                 sloid = slo.get("id", "")
             except Exception as e:
                 logger.critical(f"SL fail: {e}")
-                emergency_close(sym, "فشل وضع SL")
-                return False
-
+                emergency_close(sym, "SL fail")
+                return
             try:
                 tpo = exchange.create_order(sym, "TAKE_PROFIT_MARKET", cs, aqty, None, {"stopPrice": tp_price, "reduceOnly": True, "workingType": "MARK_PRICE"})
                 tpoid = tpo.get("id", "")
@@ -2096,21 +2039,22 @@ def execute_trade(sym, final):
                 logger.error(f"TP fail: {e}")
                 if sloid:
                     try: exchange.cancel_order(sloid, sym)
-                    except Exception: pass
-                emergency_close(sym, "فشل وضع TP")
-                return False
+                    except: pass
+                emergency_close(sym, "TP fail")
+                return
 
             st["t"] = time.time()
-
-            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE", entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price, sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid, confidence=final.final_score, reason=f"APEX={final.apex_score:.0f} | TIER={tier}", timestamp=datetime.now(timezone.utc).isoformat(), status="OPEN")
-            logger.info(f"✅ تمت الصفقة الحقيقية بنجاح #{tid} | الدخول: {entry} | TIER {tier} | Lev x{applied_leverage}")
-            return True
+            tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE",
+                                  entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price,
+                                  sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid,
+                                  confidence=final.final_score, reason=f"SLOT {slot_num}",
+                                  timestamp=datetime.now(timezone.utc).isoformat(),
+                                  status="OPEN", slot_used=slot_num, leverage_used=leverage)
+            logger.info(f"✅ LIVE #{tid} [SLOT {slot_num} x{leverage}] {sym} @ {entry}")
 
         except Exception as e:
             logger.error(f"Exec Error: {e}")
             emergency_close(sym, str(e))
-            return False
-
         finally:
             st["executing"] = False
 
@@ -2123,10 +2067,7 @@ async def ws_worker():
         if not current:
             await asyncio.sleep(10)
             continue
-        streams = []
-        for sk in current:
-            for tf in CFG.timeframes:
-                streams.append(f"{sk}@kline_{tf}")
+        streams = [f"{sk}@kline_{tf}" for sk in current for tf in CFG.timeframes]
         url = "wss://fstream.binance.com/stream?streams=" + "/".join(streams)
         try:
             async with websockets.connect(url, ping_interval=CFG.ws_ping_interval, ping_timeout=CFG.ws_ping_timeout) as ws:
@@ -2135,10 +2076,8 @@ async def ws_worker():
                 async for msg in ws:
                     data = json.loads(msg)
                     k = data.get("data", {}).get("k")
-                    if not k:
-                        continue
-                    sk = k["s"].lower()
-                    tf = k["i"]
+                    if not k: continue
+                    sk = k["s"].lower(); tf = k["i"]
                     candle = [k["t"], float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["v"])]
                     cm.update(sk, tf, candle, k["x"])
         except Exception as e:
@@ -2150,23 +2089,14 @@ async def ws_worker():
 def main():
     ip = show_deploy_ip()
     logger.info("=" * 60)
-    logger.info("APEX TRADING BOT v3.0 — Multi-Layer Fusion + ISS Quantum + OPP FIX")
-    logger.info(f"   IP: {ip}")
+    logger.info("APEX v3.1 — ISS Singularity + 5-Slot Aggressive")
     logger.info(f"   Mode: {'DRY_RUN 📝' if CFG.dry_run else 'LIVE 🚀'}")
-    logger.info(f"   Scanner every {CFG.scanner_interval}s → Top {CFG.scanner_top_n}")
-    logger.info(f"   Min Signal Score: {CFG.min_signal_score} | Min Confidence: {CFG.min_confidence}")
-    logger.info(f"   Min Module Agreement: {CFG.min_module_agreement}")
-    logger.info(f"   Max Risk Score: {CFG.max_risk_for_entry} | Open Positions: {CFG.max_open_positions}")
-    logger.info(f"   Base Leverage: x{CFG.leverage} | Risk/Trade: {CFG.risk_per_trade_pct}%")
-    logger.info(f"   Tier System: {'ENABLED 🎯' if CFG.tier_levels_enabled else 'DISABLED'}")
-    logger.info(f"   ISS Quantum Module: ENABLED 🌌 (weight=0.17, pure math)")
-    logger.info(f"   Opportunity Pool: ENABLED 🏆 (max=5, TTL=300s, Explosive≥96)")
-    logger.info(f"   Live Position Check: ENABLED 🔄 (فحص مباشر من بينانس)")
-    logger.info(f"   SL: {CFG.max_sl_percent}% | TP: {CFG.max_tp_percent}% | Ratio: 1:{CFG.max_tp_percent/CFG.max_sl_percent:.1f}")
-    logger.info(f"   Max Daily Loss: {CFG.max_daily_loss_pct}% | Max Consec Losses: {CFG.max_consecutive_losses}")
-    logger.info(f"   External Strategies: {CFG.use_external_strategies} | Available: {EXTERNAL_AVAILABLE}")
-    logger.info(f"   DB: {CFG.db_path}")
+    logger.info(f"   ISS Override: ON (Conf > {CFG.slot5_min_iss_confidence})")
+    logger.info(f"   Slots: 1-2(x5) | 3-4(x15) | 5(x20 SNIPER)")
+    logger.info(f"   Min Signal: {CFG.min_signal_score} | Conf: {CFG.min_confidence}")
+    logger.info(f"   Open Positions: {CFG.max_open_positions}")
     logger.info("=" * 60)
+
     threading.Thread(target=run_server, daemon=True).start()
     time.sleep(2)
     try:
@@ -2175,22 +2105,20 @@ def main():
     except Exception as e:
         logger.critical(f"Binance connection failed: {e}")
         return
+
     logger.info("Loading historical data...")
     for sk, sym in CFG.watchlist.items():
         cm.ensure(sk, CFG.timeframes)
         for tf in CFG.timeframes:
             try:
-                limit = 500 if tf == "1d" else 300
-                data = exchange_public.fetch_ohlcv(sym, timeframe=tf, limit=limit)
+                data = exchange_public.fetch_ohlcv(sym, timeframe=tf, limit=300)
                 cm.load(sk, tf, data)
             except Exception as e:
                 logger.warning(f"Load {sym} {tf}: {e}")
             time.sleep(0.2)
-    logger.info("Data ready")
 
     monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
-
     scanner = MarketScanner()
     scanner.start()
     bot_stats["status"] = "RUNNING"
@@ -2200,7 +2128,6 @@ def main():
         logger.info("Shutdown requested")
         scanner.stop()
         monitor.stop()
-
 
 if __name__ == "__main__":
     main()
