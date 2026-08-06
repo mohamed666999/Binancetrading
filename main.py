@@ -1274,6 +1274,24 @@ class PositionMonitor:
             if symbol not in tickers:
                 continue
             current_price = tickers[symbol]['last']
+
+            # ========== إضافة فحص الإغلاق الخارجي ==========
+            try:
+                pos = self.exchange.fetch_positions([symbol])
+                if pos and float(pos[0].get('contracts', 0)) == 0:
+                    # إلغاء الأوامر المعلقة
+                    open_orders = self.exchange.fetch_open_orders(symbol)
+                    for order in open_orders:
+                        self.exchange.cancel_order(order['id'], symbol)
+                    # إغلاق الصفقة في قاعدة البيانات
+                    self.db.close_trade(tid=trade['id'], exit_price=current_price,
+                                        rpnl=0.0, pp=0.0, comm=0.0, reason="EXTERNAL_CLOSE")
+                    logger.info(f"🧹 External close detected for {symbol}, cancelled orders.")
+                    continue
+            except Exception as e:
+                logger.debug(f"Position check error: {e}")
+            # ===============================================
+
             if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
                 self.close_trade(trade, current_price, "STOP_LOSS")
                 continue
@@ -1317,6 +1335,17 @@ class PositionMonitor:
             pnl = (entry_price - exit_price) * qty
             pnl_pct = ((entry_price - exit_price) / entry_price) * 100
         self.db.close_trade(tid=tid, ep=exit_price, rpnl=pnl, pp=pnl_pct, comm=0.0, reason=reason)
+
+        # ========== 🔥 إلغاء جميع الأوامر المعلقة بعد إغلاق الصفقة ==========
+        try:
+            open_orders = self.exchange.fetch_open_orders(symbol)
+            for order in open_orders:
+                self.exchange.cancel_order(order['id'], symbol)
+            logger.info(f"🧹 Cancelled all open orders for {symbol} (TP/SL removed).")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not cancel open orders for {symbol}: {e}")
+        # =================================================================
+
         logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
         if tid in self.trailing_peaks:
             del self.trailing_peaks[tid]
