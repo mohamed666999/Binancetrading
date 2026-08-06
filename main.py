@@ -1230,6 +1230,25 @@ class TradeDB:
 db = TradeDB(CFG.db_path)
 
 
+# ===============================================================
+# 🧹 دالة إلغاء جميع الأوامر المعلقة (مضافة)
+# ===============================================================
+def cancel_all_open_orders(exchange, symbol):
+    """Cancel all open orders for a symbol."""
+    try:
+        orders = exchange.fetch_open_orders(symbol)
+        if not orders:
+            return
+        for order in orders:
+            try:
+                exchange.cancel_order(order["id"], symbol)
+            except Exception as e:
+                logger.warning(f"Failed to cancel order {order['id']} on {symbol}: {e}")
+        logger.info(f"🧹 Cancelled {len(orders)} open orders for {symbol}")
+    except Exception as e:
+        logger.warning(f"Could not fetch open orders for {symbol}: {e}")
+
+
 class PositionMonitor:
     def __init__(self, exchange, db_instance: TradeDB, config: Config):
         self.exchange = exchange
@@ -1280,9 +1299,7 @@ class PositionMonitor:
                 pos = self.exchange.fetch_positions([symbol])
                 if pos and float(pos[0].get('contracts', 0)) == 0:
                     # إلغاء الأوامر المعلقة
-                    open_orders = self.exchange.fetch_open_orders(symbol)
-                    for order in open_orders:
-                        self.exchange.cancel_order(order['id'], symbol)
+                    cancel_all_open_orders(self.exchange, symbol)
                     # إغلاق الصفقة في قاعدة البيانات
                     self.db.close_trade(tid=trade['id'], exit_price=current_price,
                                         rpnl=0.0, pp=0.0, comm=0.0, reason="EXTERNAL_CLOSE")
@@ -1336,14 +1353,8 @@ class PositionMonitor:
             pnl_pct = ((entry_price - exit_price) / entry_price) * 100
         self.db.close_trade(tid=tid, ep=exit_price, rpnl=pnl, pp=pnl_pct, comm=0.0, reason=reason)
 
-        # ========== 🔥 إلغاء جميع الأوامر المعلقة بعد إغلاق الصفقة ==========
-        try:
-            open_orders = self.exchange.fetch_open_orders(symbol)
-            for order in open_orders:
-                self.exchange.cancel_order(order['id'], symbol)
-            logger.info(f"🧹 Cancelled all open orders for {symbol} (TP/SL removed).")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not cancel open orders for {symbol}: {e}")
+        # ========== إلغاء جميع الأوامر المعلقة بعد إغلاق الصفقة ==========
+        cancel_all_open_orders(self.exchange, symbol)
         # =================================================================
 
         logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
@@ -2012,6 +2023,10 @@ def execute_trade(sym, final, apex, iss_sig):
 
             balance = get_balance()
             if balance <= 0: return
+
+            # ========== تنظيف الأوامر المعلقة قبل فتح الصفقة ==========
+            cancel_all_open_orders(exchange, sym)
+            # =========================================================
 
             # حجم الصفقة يعتمد على المخاطرة الثابتة (لا تتغير بالرافعة)
             qty = position_size(balance, price, sl_price, CFG.risk_per_trade_pct)
