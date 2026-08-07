@@ -1145,6 +1145,52 @@ class TradeDB:
                 CREATE INDEX IF NOT EXISTS idx_status ON trades(status);
                 CREATE INDEX IF NOT EXISTS idx_symbol ON trades(symbol);
                 CREATE INDEX IF NOT EXISTS idx_timestamp ON trades(timestamp);
+
+                -- 🔹 جداول API الجديدة (للبوت الثاني)
+                CREATE TABLE IF NOT EXISTS open_trades_api (
+                    trade_id INTEGER PRIMARY KEY,
+                    symbol TEXT,
+                    side TEXT,
+                    entry_price REAL,
+                    quantity REAL,
+                    sl_price REAL,
+                    tp_price REAL,
+                    confidence REAL,
+                    entry_quality REAL,
+                    regime TEXT,
+                    reason TEXT,
+                    leverage INTEGER,
+                    opened_at TEXT,
+                    updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS closed_trades_api (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id INTEGER,
+                    symbol TEXT,
+                    side TEXT,
+                    entry_price REAL,
+                    exit_price REAL,
+                    quantity REAL,
+                    pnl_usdt REAL,
+                    pnl_percent REAL,
+                    exit_reason TEXT,
+                    leverage INTEGER,
+                    opened_at TEXT,
+                    closed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS signals_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT,
+                    side TEXT,
+                    confidence REAL,
+                    final_score REAL,
+                    regime TEXT,
+                    decision TEXT,
+                    reject_reason TEXT,
+                    created_at TEXT
+                );
             """)
             self.conn.commit()
 
@@ -1225,6 +1271,76 @@ class TradeDB:
                 "SELECT COALESCE(SUM(realized_pnl), 0) FROM trades WHERE status='CLOSED'").fetchone()[0]
         winrate = wins / total * 100 if total > 0 else 0
         return {"total": total, "wins": wins, "winrate": winrate, "total_pnl": pnl}
+
+    # ===============================================================
+    # 🔹 دوال API الجديدة (للتسجيل فقط، لا تؤثر على منطق التداول)
+    # ===============================================================
+    def api_add_open_trade(self, trade):
+        with self.lock:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO open_trades_api
+                (trade_id, symbol, side, entry_price, quantity, sl_price, tp_price,
+                 confidence, entry_quality, regime, reason, leverage, opened_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                trade["id"],
+                trade["symbol"],
+                trade["side"],
+                trade["entry_price"],
+                trade["quantity"],
+                trade["sl_price"],
+                trade["tp_price"],
+                trade.get("confidence", 0),
+                trade.get("entry_quality", 0),
+                trade.get("regime", ""),
+                trade.get("reason", ""),
+                trade.get("leverage_used", 5),
+                trade["timestamp"],
+                datetime.now(timezone.utc).isoformat()
+            ))
+            self.conn.commit()
+
+    def api_close_trade(self, trade, exit_price, pnl, pnl_pct, reason):
+        with self.lock:
+            self.conn.execute("""
+                INSERT INTO closed_trades_api
+                (trade_id, symbol, side, entry_price, exit_price, quantity,
+                 pnl_usdt, pnl_percent, exit_reason, leverage, opened_at, closed_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                trade["id"],
+                trade["symbol"],
+                trade["side"],
+                trade["entry_price"],
+                exit_price,
+                trade["quantity"],
+                pnl,
+                pnl_pct,
+                reason,
+                trade.get("leverage_used", 5),
+                trade["timestamp"],
+                datetime.now(timezone.utc).isoformat()
+            ))
+            self.conn.execute("DELETE FROM open_trades_api WHERE trade_id=?", (trade["id"],))
+            self.conn.commit()
+
+    def log_signal(self, symbol, side, confidence, score, regime, decision, reject=""):
+        with self.lock:
+            self.conn.execute("""
+                INSERT INTO signals_history
+                (symbol, side, confidence, final_score, regime, decision, reject_reason, created_at)
+                VALUES (?,?,?,?,?,?,?,?)
+            """, (
+                symbol,
+                side,
+                confidence,
+                score,
+                regime,
+                decision,
+                reject,
+                datetime.now(timezone.utc).isoformat()
+            ))
+            self.conn.commit()
 
 
 db = TradeDB(CFG.db_path)
@@ -1356,6 +1472,9 @@ class PositionMonitor:
         # ========== إلغاء جميع الأوامر المعلقة بعد إغلاق الصفقة ==========
         cancel_all_open_orders(self.exchange, symbol)
         # =================================================================
+
+        # 🔹 تسجيل الإغلاق في جداول API
+        self.db.api_close_trade(trade, exit_price, pnl, pnl_pct, reason)
 
         logger.info(f"Closed Trade #{tid} [{symbol}] | Reason: {reason} | PnL: {pnl_pct:.2f}%")
         if tid in self.trailing_peaks:
@@ -1874,6 +1993,8 @@ class MarketScanner:
             if apex.decision.value != ext_decision and apex.decision != Decision.WAIT:
                 is_external_veto = True
 
+        reject_reason = ""  # سنستخدمه لتسجيل سبب الرفض إن وجد
+
         if iss_override:
             # تجاوز الفيتو الخارجي والذكاء الاصطناعي في حالة التفرد الكوني
             final.decision = Decision.BUY if apex.direction == Direction.LONG else Decision.SELL
@@ -1883,10 +2004,12 @@ class MarketScanner:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
             final.reasons = [f"APEX WAIT"] + apex.reasons
+            reject_reason = "APEX WAIT"
         elif is_external_veto:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
             final.reasons = [f"🛑 EXTERNAL VETO"] + apex.reasons
+            reject_reason = "External Veto"
         elif ai["error"]:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
             final.final_score = apex.confidence
@@ -1895,10 +2018,23 @@ class MarketScanner:
             final.decision = Decision.WAIT
             final.final_score = apex.confidence
             final.reasons = [f"🛑 AI VETO"] + apex.reasons
+            reject_reason = "AI Veto"
         else:
             final.decision = Decision.BUY if apex.decision == Decision.BUY else Decision.SELL
             final.final_score = (apex.confidence * 0.75) + (ai["confidence"] * 0.15) + (ext_conf * 0.10)
             final.reasons = [f"✅ APEX {apex.decision.value} | AI={ai['decision']}"] + apex.reasons
+
+        # 🔹 تسجيل الإشارة في جدول signals_history
+        side_str = "LONG" if final.decision == Decision.BUY else ("SHORT" if final.decision == Decision.SELL else "WAIT")
+        db.log_signal(
+            symbol=sym,
+            side=side_str,
+            confidence=iss_sig.confidence if iss_sig else 0.0,
+            score=final.final_score,
+            regime=final.regime,
+            decision=str(final.decision),
+            reject=reject_reason
+        )
 
         logger.info(f"FINAL {sym}: {final.decision.value} | Score={final.final_score:.1f}")
         bot_stats["last_analysis"][sym] = {
@@ -2035,10 +2171,17 @@ def execute_trade(sym, final, apex, iss_sig):
 
             if CFG.dry_run:
                 st["t"] = time.time()
-                db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN",
+                tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN",
                                 entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price,
                                 confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(),
                                 status="OPEN", slot_used=slot_num, leverage_used=leverage)
+                # 🔹 تسجيل الصفقة في API
+                trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
+                         "entry_price": price, "quantity": qty, "sl_price": sl_price, "tp_price": tp_price,
+                         "confidence": final.final_score, "entry_quality": final.entry_quality,
+                         "regime": final.regime, "reason": f"SLOT {slot_num}",
+                         "leverage_used": leverage, "timestamp": datetime.now(timezone.utc).isoformat()}
+                db.api_add_open_trade(trade)
                 logger.info(f"✅ DRY RUN [SLOT {slot_num}] {sym}")
                 return
 
@@ -2094,6 +2237,15 @@ def execute_trade(sym, final, apex, iss_sig):
                                   confidence=final.final_score, reason=f"SLOT {slot_num}",
                                   timestamp=datetime.now(timezone.utc).isoformat(),
                                   status="OPEN", slot_used=slot_num, leverage_used=leverage)
+
+            # 🔹 تسجيل الصفقة المفتوحة في API
+            trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
+                     "entry_price": entry, "quantity": aqty, "sl_price": sl_price, "tp_price": tp_price,
+                     "confidence": final.final_score, "entry_quality": final.entry_quality,
+                     "regime": final.regime, "reason": f"SLOT {slot_num}",
+                     "leverage_used": leverage, "timestamp": datetime.now(timezone.utc).isoformat()}
+            db.api_add_open_trade(trade)
+
             logger.info(f"✅ LIVE #{tid} [SLOT {slot_num} x{leverage}] {sym} @ {entry}")
 
         except Exception as e:
