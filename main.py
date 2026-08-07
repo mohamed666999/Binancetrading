@@ -2103,6 +2103,9 @@ def emergency_close(sym, reason):
         logger.critical(f"❌ Emergency close fail: {e}")
 
 
+# =============================================================================
+# ✅ الدالة المعدلة execute_trade (تم إضافة regime, ai_explanation, tf_alignment)
+# =============================================================================
 def execute_trade(sym, final, apex, iss_sig):
     st = trade_state.setdefault(sym, {})
     if st.get("executing", False):
@@ -2173,9 +2176,13 @@ def execute_trade(sym, final, apex, iss_sig):
                 st["t"] = time.time()
                 tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN",
                                 entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price,
-                                confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(),
-                                status="OPEN", slot_used=slot_num, leverage_used=leverage,
-                                regime=final.regime, ai_explanation=final.ai_explanation)
+                                confidence=final.final_score,
+                                reason=f"SLOT {slot_num}",
+                                regime=final.regime,
+                                ai_explanation=final.ai_explanation,
+                                tf_alignment=final.tf_alignment,
+                                timestamp=datetime.now(timezone.utc).isoformat(),
+                                status="OPEN", slot_used=slot_num, leverage_used=leverage)
                 # 🔹 تسجيل الصفقة في API
                 trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
                          "entry_price": price, "quantity": qty, "sl_price": sl_price, "tp_price": tp_price,
@@ -2232,13 +2239,19 @@ def execute_trade(sym, final, apex, iss_sig):
                 return
 
             st["t"] = time.time()
+            # =====================================================
+            # 🔥 التعديل المطلوب: إضافة regime, ai_explanation, tf_alignment
+            # =====================================================
             tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE",
                                   entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price,
                                   sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid,
-                                  confidence=final.final_score, reason=f"SLOT {slot_num}",
+                                  confidence=final.final_score,
+                                  reason=f"SLOT {slot_num}",
+                                  regime=final.regime,
+                                  ai_explanation=final.ai_explanation,
+                                  tf_alignment=final.tf_alignment,
                                   timestamp=datetime.now(timezone.utc).isoformat(),
-                                  status="OPEN", slot_used=slot_num, leverage_used=leverage,
-                                  regime=final.regime, ai_explanation=final.ai_explanation)
+                                  status="OPEN", slot_used=slot_num, leverage_used=leverage)
 
             # 🔹 تسجيل الصفقة المفتوحة في API
             trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
