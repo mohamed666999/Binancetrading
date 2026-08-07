@@ -2174,7 +2174,8 @@ def execute_trade(sym, final, apex, iss_sig):
                 tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="DRY_RUN",
                                 entry_price=price, quantity=qty, sl_price=sl_price, tp_price=tp_price,
                                 confidence=final.final_score, timestamp=datetime.now(timezone.utc).isoformat(),
-                                status="OPEN", slot_used=slot_num, leverage_used=leverage)
+                                status="OPEN", slot_used=slot_num, leverage_used=leverage,
+                                regime=final.regime, ai_explanation=final.ai_explanation)
                 # 🔹 تسجيل الصفقة في API
                 trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
                          "entry_price": price, "quantity": qty, "sl_price": sl_price, "tp_price": tp_price,
@@ -2236,7 +2237,8 @@ def execute_trade(sym, final, apex, iss_sig):
                                   sl_order_id=sloid, tp_order_id=tpoid, entry_order_id=eoid,
                                   confidence=final.final_score, reason=f"SLOT {slot_num}",
                                   timestamp=datetime.now(timezone.utc).isoformat(),
-                                  status="OPEN", slot_used=slot_num, leverage_used=leverage)
+                                  status="OPEN", slot_used=slot_num, leverage_used=leverage,
+                                  regime=final.regime, ai_explanation=final.ai_explanation)
 
             # 🔹 تسجيل الصفقة المفتوحة في API
             trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
