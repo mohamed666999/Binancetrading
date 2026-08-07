@@ -1140,7 +1140,8 @@ class TradeDB:
                     pnl_percent REAL, commission REAL DEFAULT 0,
                     closed_at TEXT, close_reason TEXT,
                     ai_explanation TEXT, tf_alignment INTEGER,
-                    final_score REAL, slot_used INTEGER DEFAULT 0, leverage_used INTEGER DEFAULT 5
+                    final_score REAL, slot_used INTEGER DEFAULT 0, leverage_used INTEGER DEFAULT 5,
+                    source TEXT DEFAULT 'BOT'
                 );
                 CREATE INDEX IF NOT EXISTS idx_status ON trades(status);
                 CREATE INDEX IF NOT EXISTS idx_symbol ON trades(symbol);
@@ -1161,7 +1162,8 @@ class TradeDB:
                     reason TEXT,
                     leverage INTEGER,
                     opened_at TEXT,
-                    updated_at TEXT
+                    updated_at TEXT,
+                    source TEXT DEFAULT 'BOT'
                 );
 
                 CREATE TABLE IF NOT EXISTS closed_trades_api (
@@ -1177,7 +1179,8 @@ class TradeDB:
                     exit_reason TEXT,
                     leverage INTEGER,
                     opened_at TEXT,
-                    closed_at TEXT
+                    closed_at TEXT,
+                    source TEXT DEFAULT 'BOT'
                 );
 
                 CREATE TABLE IF NOT EXISTS signals_history (
@@ -1201,8 +1204,8 @@ class TradeDB:
                 (symbol, side, mode, entry_price, quantity, sl_price, tp_price,
                 sl_order_id, tp_order_id, entry_order_id, confidence, entry_quality,
                 risk_score, regime, reason, timestamp, status, ai_explanation,
-                tf_alignment, final_score, slot_used, leverage_used)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tf_alignment, final_score, slot_used, leverage_used, source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (kw.get("symbol"), kw.get("side"), kw.get("mode"),
                  kw.get("entry_price"), kw.get("quantity"),
                  kw.get("sl_price"), kw.get("tp_price"),
@@ -1213,7 +1216,8 @@ class TradeDB:
                  kw.get("timestamp", ""), kw.get("status", "OPEN"),
                  kw.get("ai_explanation", ""), kw.get("tf_alignment", 0),
                  kw.get("final_score", 0), kw.get("slot_used", 0),
-                 kw.get("leverage_used", 5)))
+                 kw.get("leverage_used", 5), kw.get("source", "BOT"))
+            )
             self.conn.commit()
             return cur.lastrowid
 
@@ -1280,8 +1284,8 @@ class TradeDB:
             self.conn.execute("""
                 INSERT OR REPLACE INTO open_trades_api
                 (trade_id, symbol, side, entry_price, quantity, sl_price, tp_price,
-                 confidence, entry_quality, regime, reason, leverage, opened_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 confidence, entry_quality, regime, reason, leverage, opened_at, updated_at, source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 trade["id"],
                 trade["symbol"],
@@ -1296,7 +1300,8 @@ class TradeDB:
                 trade.get("reason", ""),
                 trade.get("leverage_used", 5),
                 trade["timestamp"],
-                datetime.now(timezone.utc).isoformat()
+                datetime.now(timezone.utc).isoformat(),
+                trade.get("source", "BOT")
             ))
             self.conn.commit()
 
@@ -1305,8 +1310,8 @@ class TradeDB:
             self.conn.execute("""
                 INSERT INTO closed_trades_api
                 (trade_id, symbol, side, entry_price, exit_price, quantity,
-                 pnl_usdt, pnl_percent, exit_reason, leverage, opened_at, closed_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 pnl_usdt, pnl_percent, exit_reason, leverage, opened_at, closed_at, source)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 trade["id"],
                 trade["symbol"],
@@ -1319,7 +1324,8 @@ class TradeDB:
                 reason,
                 trade.get("leverage_used", 5),
                 trade["timestamp"],
-                datetime.now(timezone.utc).isoformat()
+                datetime.now(timezone.utc).isoformat(),
+                trade.get("source", "BOT")
             ))
             self.conn.execute("DELETE FROM open_trades_api WHERE trade_id=?", (trade["id"],))
             self.conn.commit()
@@ -1406,17 +1412,23 @@ class PositionMonitor:
             tp_price = trade['tp_price']
             sl_price = trade['sl_price']
             qty = trade['quantity']
+            source = trade.get('source', 'BOT')  # BOT, SYNC, EXTERNAL
+
+            # ========== تجاهل الصفقات المسترجعة أو الخارجية ==========
+            if source in ('SYNC', 'EXTERNAL'):
+                logger.debug(f"⏭️ Skipping {symbol} (source={source}) - monitor only BOT trades")
+                continue
+            # ==========================================================
+
             if symbol not in tickers:
                 continue
             current_price = tickers[symbol]['last']
 
-            # ========== إضافة فحص الإغلاق الخارجي ==========
+            # ========== فحص الإغلاق الخارجي ==========
             try:
                 pos = self.exchange.fetch_positions([symbol])
                 if pos and float(pos[0].get('contracts', 0)) == 0:
-                    # إلغاء الأوامر المعلقة
                     cancel_all_open_orders(self.exchange, symbol)
-                    # إغلاق الصفقة في قاعدة البيانات
                     self.db.close_trade(tid=trade['id'], exit_price=current_price,
                                         rpnl=0.0, pp=0.0, comm=0.0, reason="EXTERNAL_CLOSE")
                     logger.info(f"🧹 External close detected for {symbol}, cancelled orders.")
@@ -1425,10 +1437,27 @@ class PositionMonitor:
                 logger.debug(f"Position check error: {e}")
             # ===============================================
 
-            if (side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price):
+            # ========== التحقق من صحة SL و TP ==========
+            valid_sl = False
+            valid_tp = False
+            if sl_price > 0:
+                if side == 'LONG' and sl_price < entry_price:
+                    valid_sl = True
+                elif side == 'SHORT' and sl_price > entry_price:
+                    valid_sl = True
+            if tp_price > 0:
+                if side == 'LONG' and tp_price > entry_price:
+                    valid_tp = True
+                elif side == 'SHORT' and tp_price < entry_price:
+                    valid_tp = True
+
+            # =============================================
+
+            if valid_sl and ((side == "LONG" and current_price <= sl_price) or (side == "SHORT" and current_price >= sl_price)):
                 self.close_trade(trade, current_price, "STOP_LOSS")
                 continue
-            if self.cfg.trailing_enabled:
+
+            if self.cfg.trailing_enabled and valid_tp:
                 if side == "LONG":
                     current_distance = current_price - entry_price
                     tp_distance = tp_price - entry_price
@@ -1445,7 +1474,8 @@ class PositionMonitor:
                     if progress <= (peak - self.cfg.trailing_drop):
                         self.close_trade(trade, current_price, "TRAILING_TAKE_PROFIT")
                         continue
-            if (side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price):
+
+            if valid_tp and ((side == "LONG" and current_price >= tp_price) or (side == "SHORT" and current_price <= tp_price)):
                 self.close_trade(trade, current_price, "TAKE_PROFIT")
 
     def close_trade(self, trade, exit_price, reason):
@@ -2138,7 +2168,7 @@ def emergency_close(sym, reason):
 
 
 # =============================================================================
-# ✅ الدالة المعدلة execute_trade (تم إضافة regime, ai_explanation, tf_alignment)
+# ✅ الدالة المعدلة execute_trade (تم إضافة regime, ai_explanation, tf_alignment, source)
 # =============================================================================
 def execute_trade(sym, final, apex, iss_sig):
     st = trade_state.setdefault(sym, {})
@@ -2216,13 +2246,15 @@ def execute_trade(sym, final, apex, iss_sig):
                                 ai_explanation=final.ai_explanation,
                                 tf_alignment=final.tf_alignment,
                                 timestamp=datetime.now(timezone.utc).isoformat(),
-                                status="OPEN", slot_used=slot_num, leverage_used=leverage)
+                                status="OPEN", slot_used=slot_num, leverage_used=leverage,
+                                source="BOT")
                 # 🔹 تسجيل الصفقة في API
                 trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
                          "entry_price": price, "quantity": qty, "sl_price": sl_price, "tp_price": tp_price,
                          "confidence": final.final_score, "entry_quality": final.entry_quality,
                          "regime": final.regime, "reason": f"SLOT {slot_num}",
-                         "leverage_used": leverage, "timestamp": datetime.now(timezone.utc).isoformat()}
+                         "leverage_used": leverage, "timestamp": datetime.now(timezone.utc).isoformat(),
+                         "source": "BOT"}
                 db.api_add_open_trade(trade)
                 logger.info(f"✅ DRY RUN [SLOT {slot_num}] {sym}")
                 return
@@ -2274,7 +2306,7 @@ def execute_trade(sym, final, apex, iss_sig):
 
             st["t"] = time.time()
             # =====================================================
-            # 🔥 التعديل المطلوب: إضافة regime, ai_explanation, tf_alignment
+            # 🔥 التعديل المطلوب: إضافة regime, ai_explanation, tf_alignment, source
             # =====================================================
             tid = db.insert_trade(symbol=sym, side="LONG" if side == "buy" else "SHORT", mode="LIVE",
                                   entry_price=entry, quantity=aqty, sl_price=sl_price, tp_price=tp_price,
@@ -2285,14 +2317,16 @@ def execute_trade(sym, final, apex, iss_sig):
                                   ai_explanation=final.ai_explanation,
                                   tf_alignment=final.tf_alignment,
                                   timestamp=datetime.now(timezone.utc).isoformat(),
-                                  status="OPEN", slot_used=slot_num, leverage_used=leverage)
+                                  status="OPEN", slot_used=slot_num, leverage_used=leverage,
+                                  source="BOT")
 
             # 🔹 تسجيل الصفقة المفتوحة في API
             trade = {"id": tid, "symbol": sym, "side": "LONG" if side == "buy" else "SHORT",
                      "entry_price": entry, "quantity": aqty, "sl_price": sl_price, "tp_price": tp_price,
                      "confidence": final.final_score, "entry_quality": final.entry_quality,
                      "regime": final.regime, "reason": f"SLOT {slot_num}",
-                     "leverage_used": leverage, "timestamp": datetime.now(timezone.utc).isoformat()}
+                     "leverage_used": leverage, "timestamp": datetime.now(timezone.utc).isoformat(),
+                     "source": "BOT"}
             db.api_add_open_trade(trade)
 
             logger.info(f"✅ LIVE #{tid} [SLOT {slot_num} x{leverage}] {sym} @ {entry}")
@@ -2400,11 +2434,11 @@ def main():
                                 """INSERT INTO trades
                                 (symbol, side, mode, entry_price, quantity, sl_price, tp_price,
                                  confidence, entry_quality, risk_score, regime, reason, timestamp,
-                                 status, ai_explanation, tf_alignment, final_score, slot_used, leverage_used)
-                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 status, ai_explanation, tf_alignment, final_score, slot_used, leverage_used, source)
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (symbol, side, 'SYNC', entry_price, contracts, 0, 0,
                                  50, 50, 50, 'UNKNOWN', 'SYNC_FROM_BINANCE', timestamp,
-                                 'OPEN', '', 0, 50, 0, leverage)
+                                 'OPEN', '', 0, 50, 0, leverage, 'SYNC')
                             )
                             db.conn.commit()
                             tid = cursor.lastrowid
@@ -2425,11 +2459,12 @@ def main():
                             "ai_explanation": "تمت استعادة الصفقة يدوياً من بينانس",
                             "slot_used": 0,
                             "leverage_used": leverage,
-                            "timestamp": timestamp
+                            "timestamp": timestamp,
+                            "source": "SYNC"
                         }
                         db.api_add_open_trade(trade)
                         synced_count += 1
-                        logger.info(f"✅ Synced position: {symbol} {side} @ {entry_price} x{leverage}")
+                        logger.info(f"✅ Synced position: {symbol} {side} @ {entry_price} x{leverage} (source=SYNC)")
                 except Exception as e:
                     # في حال وجود خطأ مفاجئ، سيكتبه ولن ينكسر البوت
                     print(f"\n❌ CRITICAL ERROR IN SYNC FOR: {pos.get('symbol', 'UNKNOWN')}")
