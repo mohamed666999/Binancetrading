@@ -1571,6 +1571,40 @@ def positions():
     return jsonify(db.get_open_trades())
 
 
+# ===============================================================
+# 🔹 واجهات API الجديدة للبوت الثاني (قراءة فقط)
+# ===============================================================
+
+@app.route("/open_trades")
+def open_trades():
+    with db.lock:
+        rows = db.conn.execute("SELECT * FROM open_trades_api").fetchall()
+        if not rows:
+            return jsonify([])
+        cols = [desc[0] for desc in db.conn.execute("SELECT * FROM open_trades_api LIMIT 0").description]
+        return jsonify([dict(zip(cols, row)) for row in rows])
+
+
+@app.route("/closed_trades")
+def closed_trades():
+    with db.lock:
+        rows = db.conn.execute("SELECT * FROM closed_trades_api ORDER BY id DESC LIMIT 100").fetchall()
+        if not rows:
+            return jsonify([])
+        cols = [desc[0] for desc in db.conn.execute("SELECT * FROM closed_trades_api LIMIT 0").description]
+        return jsonify([dict(zip(cols, row)) for row in rows])
+
+
+@app.route("/signals")
+def signals():
+    with db.lock:
+        rows = db.conn.execute("SELECT * FROM signals_history ORDER BY id DESC LIMIT 100").fetchall()
+        if not rows:
+            return jsonify([])
+        cols = [desc[0] for desc in db.conn.execute("SELECT * FROM signals_history LIMIT 0").description]
+        return jsonify([dict(zip(cols, row)) for row in rows])
+
+
 def run_server():
     app.run(host="0.0.0.0", port=CFG.flask_port, debug=False, use_reloader=False)
 
