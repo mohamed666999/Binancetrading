@@ -7,7 +7,7 @@
 ╚══════════════════════════════════════════════════════════════╝
 """
 
-import asyncio, json, time, threading, math, os, sqlite3, logging, traceback  # تم إضافة traceback
+import asyncio, json, time, threading, math, os, sqlite3, logging, traceback
 from collections import deque, defaultdict
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
@@ -2377,9 +2377,6 @@ def main():
         # ===========================================
         if positions:
             synced_count = 0
-            # ===============================================================
-            # 🔥 التعديل المطلوب: حلقة for مع try/except لكل pos
-            # ===============================================================
             for pos in positions:
                 try:
                     contracts = float(pos.get('contracts', 0))
@@ -2433,11 +2430,9 @@ def main():
                             synced_count += 1
                             logger.info(f"✅ Synced position: {symbol} {side} @ {entry_price} x{leverage}")
                 except Exception as e:
-                    # طباعة التتبع التفصيلي للخطأ مع اسم الرمز
                     print(f"\n❌ CRITICAL ERROR IN SYNC FOR: {pos.get('symbol', 'UNKNOWN')}")
                     print(traceback.format_exc())
                     print("="*50 + "\n")
-                    # لا نوقف الحلقة، نستمر مع بقية المراكز
             logger.info(f"🔄 Sync complete: {synced_count} positions synced.")
         else:
             logger.info("🔄 No open positions found in Binance.")
