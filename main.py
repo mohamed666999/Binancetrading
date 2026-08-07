@@ -2368,6 +2368,13 @@ def main():
     logger.info("🔄 Syncing open positions from Binance...")
     try:
         positions = exchange.fetch_positions()
+        # ✅ إضافة أسطر الطباعة لمعرفة عدد المراكز وتفاصيلها
+        logger.info("=" * 60)
+        logger.info(f"POSITIONS COUNT = {len(positions)}")
+        for p in positions:
+            logger.info(p)
+        logger.info("=" * 60)
+        # ===========================================
         if positions:
             synced_count = 0
             for pos in positions:
