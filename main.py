@@ -2368,36 +2368,33 @@ def main():
     logger.info("🔄 Syncing open positions from Binance...")
     try:
         positions = exchange.fetch_positions()
-        # ✅ إضافة أسطر الطباعة لمعرفة عدد المراكز وتفاصيلها
         logger.info("=" * 60)
         logger.info(f"POSITIONS COUNT = {len(positions)}")
-        for p in positions:
-            logger.info(p)
-        logger.info("=" * 60)
-        # ===========================================
         if positions:
             synced_count = 0
             for pos in positions:
                 try:
-                    contracts = float(pos.get('contracts', 0))
+                    # 1. استخراج آمن جداً لتجنب خطأ تحويل الـ None إلى float
+                    ct = pos.get('contracts')
+                    contracts = float(ct) if ct is not None else 0.0
                     if contracts <= 0:
                         continue
-                    symbol = pos.get('symbol')
+                    symbol = pos.get('symbol', 'UNKNOWN')
                     side = 'LONG' if pos.get('side') == 'long' else 'SHORT'
-                    entry_price = float(pos.get('entryPrice', 0))
-                    # ========== إصلاح مشكلة None في leverage ==========
+                    ep = pos.get('entryPrice')
+                    entry_price = float(ep) if ep is not None else 0.0
                     lev = pos.get('leverage')
                     leverage = int(float(lev)) if lev is not None else 1
-                    # ==================================================
-                    # التحقق مما إذا كانت الصفقة موجودة بالفعل في قاعدة البيانات
+
+                    # 2. التحقق من وجود الصفقة
                     with db.lock:
                         existing = db.conn.execute(
                             "SELECT id FROM trades WHERE symbol=? AND status='OPEN' AND entry_price=? AND side=?",
                             (symbol, entry_price, side)
                         ).fetchone()
                     if not existing:
-                        # إدراج صفقة جديدة
                         timestamp = datetime.now(timezone.utc).isoformat()
+                        # 3. الإدراج في الجدول الأساسي (داخل القفل)
                         with db.lock:
                             cursor = db.conn.execute(
                                 """INSERT INTO trades
@@ -2409,27 +2406,32 @@ def main():
                                  50, 50, 50, 'UNKNOWN', 'SYNC_FROM_BINANCE', timestamp,
                                  'OPEN', '', 0, 50, 0, leverage)
                             )
+                            db.conn.commit()
                             tid = cursor.lastrowid
-                            # إضافة إلى open_trades_api
-                            trade = {
-                                "id": tid,
-                                "symbol": symbol,
-                                "side": side,
-                                "entry_price": entry_price,
-                                "quantity": contracts,
-                                "sl_price": 0,
-                                "tp_price": 0,
-                                "confidence": 50,
-                                "entry_quality": 50,
-                                "regime": "UNKNOWN",
-                                "reason": "SYNC_FROM_BINANCE",
-                                "leverage_used": leverage,
-                                "timestamp": timestamp
-                            }
-                            db.api_add_open_trade(trade)
-                            synced_count += 1
-                            logger.info(f"✅ Synced position: {symbol} {side} @ {entry_price} x{leverage}")
+
+                        # 4. 🚨 الإدراج في جدول الـ API (خارج القفل لتجنب التجميد Deadlock)
+                        trade = {
+                            "id": tid,
+                            "symbol": symbol,
+                            "side": side,
+                            "entry_price": entry_price,
+                            "quantity": contracts,
+                            "sl_price": 0,
+                            "tp_price": 0,
+                            "confidence": 50,
+                            "entry_quality": 50,
+                            "regime": "UNKNOWN",
+                            "reason": "SYNC_FROM_BINANCE",
+                            "ai_explanation": "تمت استعادة الصفقة يدوياً من بينانس",
+                            "slot_used": 0,
+                            "leverage_used": leverage,
+                            "timestamp": timestamp
+                        }
+                        db.api_add_open_trade(trade)
+                        synced_count += 1
+                        logger.info(f"✅ Synced position: {symbol} {side} @ {entry_price} x{leverage}")
                 except Exception as e:
+                    # في حال وجود خطأ مفاجئ، سيكتبه ولن ينكسر البوت
                     print(f"\n❌ CRITICAL ERROR IN SYNC FOR: {pos.get('symbol', 'UNKNOWN')}")
                     print(traceback.format_exc())
                     print("="*50 + "\n")
