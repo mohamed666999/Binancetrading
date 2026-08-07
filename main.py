@@ -2362,6 +2362,68 @@ def main():
                 logger.warning(f"Load {sym} {tf}: {e}")
             time.sleep(0.2)
 
+    # ===============================================================
+    # 🔄 مزامنة المراكز المفتوحة من Binance (استعادة الصفقات)
+    # ===============================================================
+    logger.info("🔄 Syncing open positions from Binance...")
+    try:
+        positions = exchange.fetch_positions()
+        if positions:
+            synced_count = 0
+            for pos in positions:
+                contracts = float(pos.get('contracts', 0))
+                if contracts <= 0:
+                    continue
+                symbol = pos.get('symbol')
+                side = 'LONG' if pos.get('side') == 'long' else 'SHORT'
+                entry_price = float(pos.get('entryPrice', 0))
+                leverage = int(pos.get('leverage', 1))
+                # التحقق مما إذا كانت الصفقة موجودة بالفعل في قاعدة البيانات
+                with db.lock:
+                    existing = db.conn.execute(
+                        "SELECT id FROM trades WHERE symbol=? AND status='OPEN' AND entry_price=? AND side=?",
+                        (symbol, entry_price, side)
+                    ).fetchone()
+                if not existing:
+                    # إدراج صفقة جديدة
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    with db.lock:
+                        cursor = db.conn.execute(
+                            """INSERT INTO trades
+                            (symbol, side, mode, entry_price, quantity, sl_price, tp_price,
+                             confidence, entry_quality, risk_score, regime, reason, timestamp,
+                             status, ai_explanation, tf_alignment, final_score, slot_used, leverage_used)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (symbol, side, 'SYNC', entry_price, contracts, 0, 0,
+                             50, 50, 50, 'UNKNOWN', 'SYNC_FROM_BINANCE', timestamp,
+                             'OPEN', '', 0, 50, 0, leverage)
+                        )
+                        tid = cursor.lastrowid
+                        # إضافة إلى open_trades_api
+                        trade = {
+                            "id": tid,
+                            "symbol": symbol,
+                            "side": side,
+                            "entry_price": entry_price,
+                            "quantity": contracts,
+                            "sl_price": 0,
+                            "tp_price": 0,
+                            "confidence": 50,
+                            "entry_quality": 50,
+                            "regime": "UNKNOWN",
+                            "reason": "SYNC_FROM_BINANCE",
+                            "leverage_used": leverage,
+                            "timestamp": timestamp
+                        }
+                        db.api_add_open_trade(trade)
+                        synced_count += 1
+                        logger.info(f"✅ Synced position: {symbol} {side} @ {entry_price} x{leverage}")
+            logger.info(f"🔄 Sync complete: {synced_count} positions synced.")
+        else:
+            logger.info("🔄 No open positions found in Binance.")
+    except Exception as e:
+        logger.error(f"❌ Failed to sync positions from Binance: {e}")
+
     monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
     scanner = MarketScanner()
