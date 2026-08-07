@@ -2384,7 +2384,10 @@ def main():
                 symbol = pos.get('symbol')
                 side = 'LONG' if pos.get('side') == 'long' else 'SHORT'
                 entry_price = float(pos.get('entryPrice', 0))
-                leverage = int(pos.get('leverage', 1))
+                # ========== إصلاح مشكلة None في leverage ==========
+                lev = pos.get('leverage')
+                leverage = int(float(lev)) if lev is not None else 1
+                # ==================================================
                 # التحقق مما إذا كانت الصفقة موجودة بالفعل في قاعدة البيانات
                 with db.lock:
                     existing = db.conn.execute(
@@ -2428,8 +2431,9 @@ def main():
             logger.info(f"🔄 Sync complete: {synced_count} positions synced.")
         else:
             logger.info("🔄 No open positions found in Binance.")
-    except Exception as e:
-        logger.error(f"❌ Failed to sync positions from Binance: {e}")
+    except Exception:
+        import traceback
+        logger.error(traceback.format_exc())
 
     monitor = PositionMonitor(exchange, db, CFG)
     monitor.start()
