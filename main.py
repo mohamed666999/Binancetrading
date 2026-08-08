@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║     APEX TRADING BOT v3.1 — ISS Singularity + 5-Slots      ║
-║  Architecture: 9 Classic Modules + ISS Quantum Override     ║
-║  Slots: 1-2 (x5) | 3-4 (x15) | 5 (x20 SNIPER)             ║
+║     APEX TRADING BOT v3.2 — ISS + FED (45% weight)         ║
+║  Architecture: 9 Classic Modules + ISS + FED Quantum       ║
+║  Slots: 1-2 (x5) | 3-4 (x15) | 5 (x20) | 6 (x25 LEGENDARY) ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -31,6 +31,8 @@ os.environ["NVIDIA_API_KEY_OSS"] = "nvapi-R72PitUdTxdTFo4wgFqwimDTg31sQ-JFt-BR7s
 # =============================================================================
 import numpy as np
 from scipy.stats import entropy
+import warnings
+warnings.filterwarnings('ignore')
 
 # --- External Strategies Integration (Project B / conor19w) ---
 try:
@@ -256,6 +258,120 @@ def _ichimoku(highs, lows, closes):
     tk_cross = 1 if tenkan > kijun else (-1 if tenkan < kijun else 0)
     return {"above_cloud": above_cloud, "bullish_cloud": bullish_cloud, "tk_cross": tk_cross, "tenkan": tenkan, "kijun": kijun, "senkou_a": senkou_a, "senkou_b": senkou_b}
 
+# ================================================================
+# 🧠 FED INDICATOR (Fractal Entropy Dynamics) - 45% weight
+# ================================================================
+
+def sample_entropy_fast(time_series, m=2, r_mult=0.2):
+    """Sample Entropy using vectorization (ultra-fast)"""
+    time_series = np.asarray(time_series)
+    N = len(time_series)
+    if N < m + 1:
+        return np.nan
+    r = r_mult * np.std(time_series)
+    def _phi_vectorized(m_val):
+        x = np.array([time_series[i:i + m_val] for i in range(N - m_val + 1)])
+        dist = np.max(np.abs(x[:, None, :] - x[None, :, :]), axis=2)
+        C = np.sum(dist <= r) - len(x)
+        return C / (len(x) * (len(x) - 1)) if len(x) > 1 else 0
+    phi_m = _phi_vectorized(m)
+    phi_m1 = _phi_vectorized(m + 1)
+    if phi_m == 0 or phi_m1 == 0:
+        return np.nan
+    return -np.log(phi_m1 / phi_m)
+
+def higuchi_fd_fast(X, kmax=10):
+    """Higuchi Fractal Dimension (optimized)"""
+    X = np.asarray(X)
+    N = len(X)
+    if N < kmax:
+        return np.nan
+    L = np.zeros(kmax)
+    for k in range(1, kmax + 1):
+        Lk = 0.0
+        for i in range(k):
+            idx = np.arange(i, N, k)
+            if len(idx) > 1:
+                Lk += np.sum(np.abs(np.diff(X[idx]))) * (N - 1) / (k * len(idx) ** 2)
+        L[k - 1] = Lk / k
+    valid = L > 0
+    if np.sum(valid) < 2:
+        return np.nan
+    x = np.log(1.0 / np.arange(1, kmax + 1)[valid])
+    y = np.log(L[valid])
+    slope = np.polyfit(x, y, 1)[0]
+    return slope
+
+def dfa_exponent_fast(X, scales=None):
+    """Detrended Fluctuation Analysis exponent"""
+    X = np.asarray(X)
+    N = len(X)
+    if N < 10:
+        return np.nan
+    if scales is None:
+        scales = np.unique(np.logspace(np.log10(4), np.log10(N // 4), 10).astype(int))
+    y = np.cumsum(X - np.mean(X))
+    fluct = np.zeros(len(scales))
+    for idx_s, scale in enumerate(scales):
+        if scale < 2:
+            fluct[idx_s] = np.nan
+            continue
+        n_seg = N // scale
+        if n_seg < 1:
+            fluct[idx_s] = np.nan
+            continue
+        segments = y[:n_seg * scale].reshape((n_seg, scale))
+        x_axis = np.arange(scale)
+        rms = 0.0
+        for seg in segments:
+            coeffs = np.polyfit(x_axis, seg, 1)
+            trend = np.polyval(coeffs, x_axis)
+            rms += np.mean((seg - trend) ** 2)
+        fluct[idx_s] = np.sqrt(rms / n_seg)
+    valid = ~np.isnan(fluct)
+    if np.sum(valid) < 2:
+        return np.nan
+    x = np.log(scales[valid])
+    y_vals = np.log(fluct[valid])
+    slope = np.polyfit(x, y_vals, 1)[0]
+    return slope
+
+def calc_fed_core(window):
+    """Compute FED components for a single window"""
+    returns = np.diff(np.log(window))
+    sampen = sample_entropy_fast(returns, m=2, r_mult=0.2) if len(returns) > 5 else np.nan
+    fd = higuchi_fd_fast(window, kmax=min(10, len(window)//2))
+    dfa = dfa_exponent_fast(window)
+    def normalize(val, min_val, max_val):
+        if np.isnan(val): return 50.0
+        clamped = np.clip(val, min_val, max_val)
+        norm = (clamped - min_val) / (max_val - min_val)
+        return 50 + 50 * np.tanh((norm - 0.5) / 0.2)
+    norm_entropy = normalize(sampen, 0.0, 2.0)
+    norm_fd = normalize(fd, 1.0, 2.0)
+    norm_dfa = normalize(dfa, 0.0, 1.5)
+    fed = 0.4 * norm_entropy + 0.3 * norm_fd + 0.3 * norm_dfa
+    return np.clip(fed, 0, 100)
+
+def FED_indicator_fast(close_prices, lookback=50):
+    """
+    FED indicator: returns dict with 'fed' value and signal.
+    """
+    close_prices = np.asarray(close_prices)
+    if len(close_prices) < lookback + 5:
+        return {'fed': np.nan, 'signal': 'neutral'}
+    current_window = close_prices[-lookback:]
+    fed_curr = calc_fed_core(current_window)
+    prev_window = close_prices[-(lookback+1):-1]
+    fed_prev = calc_fed_core(prev_window)
+    signal = 'neutral'
+    if not np.isnan(fed_curr) and not np.isnan(fed_prev):
+        if fed_curr < 30 and fed_curr > fed_prev:
+            signal = 'buy'
+        elif fed_curr > 70 and fed_curr < fed_prev:
+            signal = 'sell'
+    return {'fed': fed_curr, 'fed_prev': fed_prev, 'signal': signal}
+
 
 class DerivativesFeed:
     def __init__(self, ttl=90):
@@ -422,7 +538,7 @@ class Config:
     trailing_activation: float = 70.0
     trailing_drop: float = 8.0
     max_daily_trades: int = 15
-    max_open_positions: int = 5
+    max_open_positions: int = 6  # 🔹 تم رفع العدد لـ 6 صفقات
     cooldown_seconds: int = 60
     max_sl_percent: float = 2.0
     max_tp_percent: float = 6.0
@@ -430,16 +546,16 @@ class Config:
     max_daily_loss_pct: float = 5.0
     max_consecutive_losses: int = 3
     
-    # فلاتر خفيفة للسماح بدخول الصفقات
-    min_signal_score: float = 45.0
-    min_confidence: float = 40.0
+    # 🔹 فلاتر أكثر صرامة (حسب الطلب لتقليل الصفقات العشوائية)
+    min_signal_score: float = 52.0
+    min_confidence: float = 50.0
     min_module_agreement: int = 2
     min_entry_quality: float = 45.0
     max_risk_for_entry: float = 55.0
     min_momentum_score: float = 40.0
     min_trend_alignment: int = 1
 
-    # === 5-SLOT SYSTEM CONFIG (Dynamic Leverage) ===
+    # === 6-SLOT SYSTEM CONFIG (Dynamic Leverage) ===
     slot1_2_min_score: float = 45.0
     slot1_2_min_conf: float = 40.0
     slot1_2_leverage: int = 5
@@ -452,6 +568,12 @@ class Config:
     slot5_min_conf: float = 72.0
     slot5_leverage: int = 20
     slot5_min_iss_confidence: float = 80.0  # الشرط الخاص بموديول ISS
+
+    # 🔹 SLOT 6 (الأسطورية المضمونة إطلاقاً)
+    slot6_min_score: float = 88.0
+    slot6_min_conf: float = 85.0
+    slot6_leverage: int = 25
+    slot6_margin_usd: float = 20.0
     
     use_ai_veto: bool = False
     use_ai_explainer: bool = True
@@ -591,11 +713,11 @@ class FinalDecision:
 
 
 class APEXEngine:
-    # NEW: تم إضافة ISS بأعلى وزن
+    # 🔹 الأوزان المعدلة: FED يصنع القرار بـ 45%، ISS بـ 25% (مجموع 70%)، والباقي موزع
     BASE_WEIGHTS = {
-        "trend": 0.14, "momentum": 0.11, "volume": 0.08, "structure": 0.08,
-        "candle": 0.06, "deriv": 0.12, "ichimoku": 0.07, "sr_levels": 0.06, 
-        "volatility": 0.04, "iss_quantum": 0.24,  # أعلى وزن لأنه يصحح البقية
+        "trend": 0.05, "momentum": 0.05, "volume": 0.03, "structure": 0.03,
+        "candle": 0.02, "deriv": 0.05, "ichimoku": 0.03, "sr_levels": 0.02,
+        "volatility": 0.02, "iss_quantum": 0.25, "fed": 0.45,
     }
 
     def analyze(self, data_primary, data_trend=None, data_fast=None, symbol=None, exchange_pub=None):
@@ -623,8 +745,10 @@ class APEXEngine:
             self._module_candle(primary), self._module_deriv(primary, deriv_data),
             self._module_ichimoku(primary), self._module_sr_levels(primary),
             self._module_volatility(primary),
-            # ✅ إضافة موديول التفرد الكوني
+            # ✅ إضافة موديول ISS المحسّن
             self._module_ethereal_iss(primary),
+            # 🧠 إضافة موديول FED
+            self._module_fed(primary),
         ]
         out.module_signals = signals
         out.total_modules = len(signals)
@@ -686,12 +810,48 @@ class APEXEngine:
         return out
 
     # ===============================================================
-    # 🧠 NEW: موديول التفرد الكوني (ISS) - قلب الخوارزمية العدوانية
+    # 🧠 موديول FED (Fractal Entropy Dynamics) - 45% weight
+    # ===============================================================
+    def _module_fed(self, d):
+        """FED indicator module - returns score and confidence"""
+        closes = d.closes
+        if len(closes) < 55:
+            return ModuleSignal("fed", 50, 20, Direction.NEUTRAL)
+        result = FED_indicator_fast(closes, lookback=50)
+        fed = result['fed']
+        if np.isnan(fed):
+            return ModuleSignal("fed", 50, 20, Direction.NEUTRAL)
+        # السكور هو قيمة FED نفسها (0-100)
+        score = float(fed)
+        # الثقة: كلما ابتعدنا عن 50 زادت الثقة
+        confidence = 50 + abs(fed - 50) * 0.5
+        confidence = clamp(confidence, 30, 95)
+        # تحديد الاتجاه بناءً على الإشارة
+        direction = Direction.NEUTRAL
+        if result['signal'] == 'buy':
+            direction = Direction.LONG
+        elif result['signal'] == 'sell':
+            direction = Direction.SHORT
+        # إذا كانت القيمة عالية (>70) أو منخفضة (<30) نعطي اتجاه
+        if fed > 70:
+            direction = Direction.LONG if score > 50 else Direction.SHORT
+        elif fed < 30:
+            direction = Direction.SHORT if score > 50 else Direction.LONG
+        return ModuleSignal(
+            name="fed",
+            score=score,
+            confidence=confidence,
+            direction=direction,
+            details={"fed": fed, "signal": result['signal']}
+        )
+
+    # ===============================================================
+    # 🧠 موديول ISS (معدل وآمن لجميع العملات)
     # ===============================================================
     def _module_ethereal_iss(self, d):
         """
         Information Spacetime Singularity (ISS)
-        يرصد الاختناق المعلوماتي الذي يسبق الانفجار السعري.
+        يرصد الاختناق المعلوماتي الذي يسبق الانفجار السعري بشكل نسبي آمن.
         """
         closes = np.array(d.closes)
         volumes = np.array(d.volumes)
@@ -703,18 +863,19 @@ class APEXEngine:
         hist, _ = np.histogram(price_changes, bins=10, density=True)
         market_entropy = entropy(hist + 1e-10)
 
-        # 2. التقلب المحلي
+        # 2. 🔹 التعديل الجوهري: التقلب المحلي بالنسبة المئوية بدلاً من القيمة المطلقة (الدولار)
         std_dev = np.std(closes[-14:])
-        # 3. معامل الاختناق (كلما زاد، كان الاختناق أشد)
-        suffocation = market_entropy / (std_dev + 1e-10)
+        std_dev_pct = (std_dev / closes[-1]) * 100 if closes[-1] > 0 else 1e-10
 
-        # 4. الانحدار الأخير (الاتجاه الذي سينفجر فيه السعر)
+        # 3. معامل الاختناق (كلما زاد، كان الاختناق أشد)
+        suffocation = market_entropy / (std_dev_pct + 1e-10)
+
+        # 4. الانحدار الأخير (الاتجاه) بالنسبة المئوية أيضاً
         recent_flux = np.gradient(closes[-5:])
-        bias = np.mean(recent_flux)
+        bias_pct = (np.mean(recent_flux) / closes[-1]) * 100
 
         # 5. تحويل إلى سكور (0-100)
-        # إذا كان الاختناق شديداً والانحياز موجباً => انفجار صاعد
-        score = 50 + (bias / (closes[-1] * 0.001)) * 15
+        score = 50 + (bias_pct * 15)
         score = clamp(score, 0, 100)
 
         # الثقة تعتمد على شدة الاختناق
@@ -726,12 +887,8 @@ class APEXEngine:
             score=score,
             confidence=confidence,
             direction=direction,
-            details={"entropy": market_entropy, "singularity": suffocation, "bias": bias}
+            details={"entropy": market_entropy, "singularity": suffocation, "bias_pct": bias_pct}
         )
-
-    # باقي الموديولات (_module_trend, _module_momentum, ... إلخ) موجودة في الكود الأصلي
-    # (اختصاراً للمساحة، لكنها مضافة في الكود النهائي بالكامل)
-    # ... (سيتم وضعها كلها في المرفق النهائي) ...
 
     def _module_trend(self, d, trend_d=None):
         closes = d.closes
@@ -1044,13 +1201,16 @@ class APEXEngine:
     def _adaptive_weights(self, regime):
         w = dict(self.BASE_WEIGHTS)
         if regime in (Regime.TRENDING_UP, Regime.TRENDING_DOWN):
-            w["trend"] = 0.25; w["momentum"] = 0.18; w["ichimoku"] = 0.12; w["sr_levels"] = 0.05; w["iss_quantum"] = 0.10
+            w["trend"] = 0.10; w["momentum"] = 0.08; w["ichimoku"] = 0.05; w["sr_levels"] = 0.02; w["iss_quantum"] = 0.15; w["fed"] = 0.45
         elif regime in (Regime.BREAKOUT_UP, Regime.BREAKOUT_DOWN):
-            w["volume"] = 0.20; w["volatility"] = 0.12; w["momentum"] = 0.18; w["deriv"] = 0.18; w["iss_quantum"] = 0.12
+            w["volume"] = 0.10; w["volatility"] = 0.05; w["momentum"] = 0.10; w["deriv"] = 0.10; w["iss_quantum"] = 0.15; w["fed"] = 0.45
         elif regime in (Regime.REVERSAL_UP, Regime.REVERSAL_DOWN):
-            w["candle"] = 0.18; w["momentum"] = 0.20; w["sr_levels"] = 0.15; w["deriv"] = 0.18; w["iss_quantum"] = 0.10
+            w["candle"] = 0.10; w["momentum"] = 0.10; w["sr_levels"] = 0.10; w["deriv"] = 0.10; w["iss_quantum"] = 0.15; w["fed"] = 0.45
         elif regime == Regime.HIGH_VOLATILITY:
-            w["deriv"] = 0.22; w["volatility"] = 0.08; w["trend"] = 0.12; w["iss_quantum"] = 0.20
+            w["deriv"] = 0.15; w["volatility"] = 0.05; w["trend"] = 0.05; w["iss_quantum"] = 0.20; w["fed"] = 0.45
+        else:
+            # افتراضي يضمن أن المجموع قريب من 1 والـ FED دائماً 45%
+            w["fed"] = 0.45
         total = sum(w.values())
         return {k: v / total for k, v in w.items()}
 
@@ -1533,7 +1693,7 @@ class PositionMonitor:
 
 app = Flask(__name__)
 bot_stats = {
-    "status": "STARTING", "version": "APEX-v3.1-ISS-AGGRESSIVE", "uptime": 0,
+    "status": "STARTING", "version": "APEX-v3.2-ISS-FED", "uptime": 0,
     "trades_today": 0, "open_positions": 0, "scanner": [],
     "last_analysis": {}, "mode": "DRY_RUN" if CFG.dry_run else "LIVE",
     "current_ip": "", "performance": {}
@@ -1559,7 +1719,7 @@ def home():
         </tr>"""
     return f"""<!DOCTYPE html>
 <html>
-<head><title>APEX v3.1 ISS</title>
+<head><title>APEX v3.2 ISS+FED</title>
 <style>
   body {{ font-family: monospace; background: #0a0a0a; color: #00ff88; padding: 20px; }}
   h1 {{ color: #00ccff; }}
@@ -1570,7 +1730,7 @@ def home():
 </style>
 </head>
 <body>
-<h1>APEX v3.1 - Singularity Sniper (5-Slots)</h1>
+<h1>APEX v3.2 - Singularity Sniper + FED (45%)</h1>
 <div>
   <span class="stat">Mode: <b>{bot_stats['mode']}</b></span>
   <span class="stat">IP: {bot_stats['current_ip']}</span>
@@ -1680,45 +1840,64 @@ def daily_pnl_pct():
     bal = get_balance() or 1.0
     return db.daily_pnl() / bal * 100
 
+# =====================================================
+# 🚨 دالة إدارة المخاطر الآمنة والمعدلة (Position Sizing)
+# =====================================================
+def position_size(balance, entry, sl, risk_pct, leverage, slot):
+    # الفتحة 6 للصفقة الأسطورية: حجم دخول 20 دولار ثابت مع رافعة 25
+    if slot == 6:
+        margin_usd = 20.0
+        return (margin_usd * leverage) / entry
 
-def position_size(balance, entry, sl, risk_pct=CFG.risk_per_trade_pct):
     risk_usdt = balance * risk_pct / 100
     sl_dist = abs(entry - sl)
     if sl_dist <= 0:
         return 0.0
-    return risk_usdt / sl_dist
+    qty = risk_usdt / sl_dist
+    
+    # حماية الهامش: لا يجب أن يتجاوز الهامش 25% من الرصيد لتجنب الرفض والتصفية السريعة
+    max_notional = balance * leverage * 0.25
+    qty = min(qty, max_notional / entry)
+    
+    # حل مشكلة الصفقات ذات الرافعة العالية التي تعطي مارجن 0.01$ (نضمن مارجن 2$ كحد أدنى)
+    min_margin = 2.0
+    if (qty * entry / leverage) < min_margin and balance > min_margin:
+        qty = (min_margin * leverage) / entry
+        
+    return qty
 
 # =====================================================
-# 🎯 5-SLOT CONFIGURATION ENGINE (Dynamic Leverage)
+# 🎯 6-SLOT CONFIGURATION ENGINE (Dynamic Leverage)
 # =====================================================
 def get_slot_config(final_score, entry_quality, iss_confidence, current_positions):
     """
     تحديد الفتحة والرافعة المالية بناءً على جودة الإشارة وعدد المراكز المفتوحة.
-    الفتحة 1-2: خفيفة (x5) | 3-4: قوية (x15) | 5: SNIPER (x20)
+    الفتحة 1-2: خفيفة (x5) | 3-4: قوية (x15) | 5: SNIPER (x20) | 6: LEGENDARY (x25)
     """
-    # الاستعلام عن موديول ISS من الـ FinalDecision أو تمريره كـ iss_conf
     if current_positions >= CFG.max_open_positions:
         return None
 
     slot = current_positions + 1  # 1-indexed
 
-    # SLOT 1 & 2 (خفيفة)
     if slot <= 2:
         if final_score >= CFG.slot1_2_min_score and entry_quality >= CFG.slot1_2_min_conf:
             return {"slot": slot, "leverage": CFG.slot1_2_leverage, "name": "NORMAL"}
         return None
 
-    # SLOT 3 & 4 (قوية) - رافعة 15
     if slot <= 4:
         if final_score >= CFG.slot3_4_min_score and entry_quality >= CFG.slot3_4_min_conf:
             return {"slot": slot, "leverage": CFG.slot3_4_leverage, "name": "STRONG"}
         return None
 
-    # SLOT 5 (SNIPER) - رافعة 20
     if slot == 5:
-        # شرط الدخول للفتحة الخامسة: إما ISS عالي أو سكور خارق
         if (iss_confidence >= CFG.slot5_min_iss_confidence) or (final_score >= CFG.slot5_min_score and entry_quality >= CFG.slot5_min_conf):
             return {"slot": slot, "leverage": CFG.slot5_leverage, "name": "SNIPER"}
+        return None
+
+    if slot == 6:
+        # الصفقة الأسطورية المضمونة إطلاقاً!
+        if final_score >= CFG.slot6_min_score and entry_quality >= CFG.slot6_min_conf:
+            return {"slot": slot, "leverage": CFG.slot6_leverage, "name": "LEGENDARY"}
         return None
 
     return None
@@ -1761,7 +1940,7 @@ class AIAnalyst:
         return {"raw": raw, "label": label}
 
     def _parse_response(self, raw: str) -> Dict[str, Any]:
-        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": []}
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "suggested_sl_pct": 0.0, "suggested_tp_pct": 0.0, "risk_warnings": []}
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             lines = [l for l in cleaned.split("\n") if not l.strip().startswith("```")]
@@ -1777,6 +1956,8 @@ class AIAnalyst:
                 result["decision"] = "WAIT"
             result["confidence"] = max(0, min(100, float(dj.get("confidence", 0))))
             result["explanation"] = str(dj.get("explanation", ""))
+            result["suggested_sl_pct"] = float(dj.get("suggested_sl_pct", 0.0))
+            result["suggested_tp_pct"] = float(dj.get("suggested_tp_pct", 0.0))
             result["risk_warnings"] = dj.get("risk_warnings", [])
         except Exception:
             result["decision"] = "WAIT"
@@ -1785,7 +1966,7 @@ class AIAnalyst:
         return result
 
     def analyze(self, symbol, apex_out):
-        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "risk_warnings": [], "error": False, "winner": ""}
+        result = {"decision": "WAIT", "confidence": 0.0, "explanation": "", "suggested_sl_pct": 0.0, "suggested_tp_pct": 0.0, "risk_warnings": [], "error": False, "winner": ""}
         if not CFG.use_ai_veto and not CFG.use_ai_explainer:
             return result
 
@@ -1806,9 +1987,11 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
 1. إذا ترى خطر حقيقي لا يراه APEX: اعترض (WAIT)
 2. إذا APEX صحيح: وافق
 3. confidence = مدى ثقتك (0-100)
+4. suggested_sl_pct = نسبة وقف الخسارة المئوية التي تراها مناسبة للتقلبات الحالية
+5. suggested_tp_pct = نسبة أخذ الربح المئوية التي تراها مناسبة
 
 أجب JSON فقط:
-{{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","risk_warnings":[]}}"""
+{{"decision":"BUY أو SELL أو WAIT","confidence":75,"explanation":"شرح مختصر بالعربية","suggested_sl_pct":2.0,"suggested_tp_pct":6.0,"risk_warnings":[]}}"""
 
         if CFG.ai_race_enabled:
             try:
@@ -1825,6 +2008,8 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
                             result["decision"] = parsed["decision"]
                             result["confidence"] = parsed["confidence"]
                             result["explanation"] = parsed["explanation"]
+                            result["suggested_sl_pct"] = parsed.get("suggested_sl_pct", 0.0)
+                            result["suggested_tp_pct"] = parsed.get("suggested_tp_pct", 0.0)
                             result["risk_warnings"] = parsed["risk_warnings"]
                             result["winner"] = label
                             logger.info(f"🏁 AI RACE [{symbol}] الفائز: {label} | {parsed['decision']} | Conf={parsed['confidence']}")
@@ -1847,6 +2032,8 @@ Modules Bull: {apex_out.bull_modules} | Bear: {apex_out.bear_modules}
             result["decision"] = parsed["decision"]
             result["confidence"] = parsed["confidence"]
             result["explanation"] = parsed["explanation"]
+            result["suggested_sl_pct"] = parsed.get("suggested_sl_pct", 0.0)
+            result["suggested_tp_pct"] = parsed.get("suggested_tp_pct", 0.0)
             result["risk_warnings"] = parsed["risk_warnings"]
             result["winner"] = "Mistral"
             logger.info(f"AI {symbol}: {parsed['decision']} | Conf={parsed['confidence']}")
@@ -2025,6 +2212,12 @@ class MarketScanner:
             if s.name == "iss_quantum":
                 iss_sig = s
                 break
+        # استخراج إشارة FED
+        fed_sig = None
+        for s in apex.module_signals:
+            if s.name == "fed":
+                fed_sig = s
+                break
 
         ai = ai_analyst.analyze(sym, apex)
 
@@ -2035,8 +2228,6 @@ class MarketScanner:
             ext_decision, ext_conf, _ = aggregate_signals(ext_signals)
 
         final = FinalDecision()
-        final.sl_percent = apex.sl_percent
-        final.tp_percent = apex.tp_percent
         final.regime = apex.regime.value
         final.apex_score = apex.confidence
         final.ai_score = ai["confidence"]
@@ -2044,8 +2235,21 @@ class MarketScanner:
         final.entry_quality = apex.composite_score
         final.tf_alignment = apex.bull_modules if apex.direction == Direction.LONG else apex.bear_modules
 
+        # 🧠 دمج الأهداف (SL/TP): محرك APEX (70%) + الذكاء الاصطناعي (30%)
+        ai_sl = ai.get("suggested_sl_pct", 0.0)
+        ai_tp = ai.get("suggested_tp_pct", 0.0)
+        if ai_sl > 0:
+            final.sl_percent = (apex.sl_percent * 0.70) + (ai_sl * 0.30)
+        else:
+            final.sl_percent = apex.sl_percent
+            
+        if ai_tp > 0:
+            final.tp_percent = (apex.tp_percent * 0.70) + (ai_tp * 0.30)
+        else:
+            final.tp_percent = apex.tp_percent
+
         # ==============================================================
-        # 🎯 القاعدة الذهبية العدوانية: إذا ISS عالي => تجاوز كل الفلاتر
+        # 🎯 القاعدة الذهبية: FED + ISS
         # ==============================================================
         iss_override = False
         if iss_sig and iss_sig.confidence >= CFG.slot5_min_iss_confidence:
@@ -2231,8 +2435,8 @@ def execute_trade(sym, final, apex, iss_sig):
             cancel_all_open_orders(exchange, sym)
             # =========================================================
 
-            # حجم الصفقة يعتمد على المخاطرة الثابتة (لا تتغير بالرافعة)
-            qty = position_size(balance, price, sl_price, CFG.risk_per_trade_pct)
+            # حساب حجم الصفقة الآمن
+            qty = position_size(balance, price, sl_price, CFG.risk_per_trade_pct, leverage, slot_num)
             qty = float(exchange.amount_to_precision(sym, qty))
             if qty <= 0: return
 
@@ -2368,10 +2572,11 @@ async def ws_worker():
 def main():
     ip = show_deploy_ip()
     logger.info("=" * 60)
-    logger.info("APEX v3.1 — ISS Singularity + 5-Slot Aggressive")
+    logger.info("APEX v3.2 — ISS + FED (45%) + 6-Slot Aggressive")
     logger.info(f"   Mode: {'DRY_RUN 📝' if CFG.dry_run else 'LIVE 🚀'}")
     logger.info(f"   ISS Override: ON (Conf > {CFG.slot5_min_iss_confidence})")
-    logger.info(f"   Slots: 1-2(x5) | 3-4(x15) | 5(x20 SNIPER)")
+    logger.info(f"   FED Weight: 45%")
+    logger.info(f"   Slots: 1-2(x5) | 3-4(x15) | 5(x20) | 6(x25 LEGENDARY)")
     logger.info(f"   Min Signal: {CFG.min_signal_score} | Conf: {CFG.min_confidence}")
     logger.info(f"   Open Positions: {CFG.max_open_positions}")
     logger.info("=" * 60)
