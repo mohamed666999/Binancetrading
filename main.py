@@ -16,7 +16,7 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import websockets, ccxt, requests
 from flask import Flask, jsonify
-from openai import OpenAI
+from ope.nai import OpenAI
 
 # =============================================================================
 # 🔑 KEYS (Environment Variables - Use .env for production!)
