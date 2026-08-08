@@ -531,7 +531,7 @@ class Config:
     ai_race_timeout: float = 45.0
     
     # === AGGRESSIVE CONFIG (خفيف الفلاتر لتشغيل الصفقات) ===
-    dry_run: bool = True
+    dry_run: bool = False
     leverage: int = 5  # Base leverage for slots 1-2
     risk_per_trade_pct: float = 3.0
     trailing_enabled: bool = True
